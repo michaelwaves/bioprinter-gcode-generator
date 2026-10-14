@@ -3,8 +3,9 @@ __pycache__/
 *.pyc
 output/
 *.gcode
-*.png
-*.jpg
-*.jpeg
-!templates/**
+.git/
 README.md
+
+# NOT ignored, and must stay that way:
+#   vendor_stubs/  -- scikit-image's .pyi stubs, needed at runtime (see lazy_stub_fix.py)
+#   templates/     -- Jinja templates

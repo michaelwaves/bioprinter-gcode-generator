@@ -1,4 +1,10 @@
-flask
-numpy
-Pillow
-scikit-image
+# scikit-image is pinned EXACTLY on purpose: vendor_stubs/ ships copies of its .pyi files,
+# which lazy_loader parses at import time to build the skimage namespace, and a version bump
+# can change them. Refresh the stubs when bumping this -- see lazy_stub_fix.py.
+scikit-image==0.26.0
+
+# These need no exact pin; floors only, so the resolver can pick wheels that match whatever
+# Python the host runs.
+flask>=3.0
+numpy>=2.0
+Pillow>=10.0

@@ -90,6 +90,47 @@ earlier versions kept a `SESSIONS` dict plus a temp dir, which breaks as soon as
 requests land on different instances. `/download` re-runs the deterministic pipeline
 rather than storing the generated file.
 
+### The scikit-image stub problem
+
+Vercel's Python builder strips `.pyi` files from installed packages. scikit-image builds its
+public namespace at import time with `lazy_loader.attach_stub()`, which **parses
+`skimage/__init__.pyi`** to learn which names live in which submodule — so for this package
+the stub is load-bearing runtime data, not type-checker metadata. Stripped, the function
+dies on cold start with:
+
+```
+ValueError: Cannot load imports from non-existent stub '/var/task/_vendor/skimage/__init__.pyi'
+```
+
+`vendor_stubs/` carries our own copies (60KB) and `lazy_stub_fix.py` points `attach_stub` at
+them when the installed stub is missing. Three details that matter if you touch this:
+
+- The copies are suffixed **`.pyi.txt`** so the same stub-pruning cannot eat them too, and
+  are staged into a temp dir under their real `.pyi` name because `attach_stub` only accepts
+  a path ending in `i`.
+- Parsing is still done **by lazy_loader itself** — the original function is called with the
+  new path — so this can't drift from how scikit-image expects its namespace built.
+- `lazy_stub_fix.install()` runs in `api/index.py` **before** `from app import app`, because
+  it has to beat the `import skimage` inside `line_trace_gcode.py`. It's a no-op where the
+  real stubs exist, so local runs are unaffected.
+
+**scikit-image is pinned exactly in requirements.txt** because the shipped stubs must match
+the installed version. To bump it, refresh the stubs:
+
+```
+SP=.venv/lib/python3.*/site-packages
+find $SP/skimage -name '*.pyi' | while read f; do
+  dst="vendor_stubs/${f#$SP/}.txt"; mkdir -p "$(dirname "$dst")"; cp "$f" "$dst"
+done
+```
+
+To verify a fix without deploying, reproduce the host behaviour by stripping the stubs from
+a scratch venv:
+
+```
+find /path/to/scratch-venv -name '*.pyi' -delete
+```
+
 ### Constraints on the free (Hobby) plan
 
 - **Bundle size: ~207MB against a 250MB limit.** scipy and networkx, pulled in by
@@ -103,7 +144,9 @@ rather than storing the generated file.
   Tracing downsamples to `MAX_TRACE_SIDE_PX` (300px) anyway, so this costs nothing real.
 - **`maxDuration` is 60s** with 1GB memory in `vercel.json`. Cold starts pay a few
   seconds to import numpy/scipy/scikit-image.
-- Vercel's Python runtime is 3.12; the pinned deps all ship 3.12 wheels.
+- The pinned deps ship `manylinux_2_28` cp312 and cp313 wheels, which Vercel's build image
+  satisfies. Note that recent numpy has **no manylinux2014 wheels** — if you pin an older
+  Python, check wheel availability before assuming it resolves.
 
 ## Notes
 
