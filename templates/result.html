@@ -156,25 +156,25 @@
       <input type="hidden" name="trace_mode" value="{{ trace_mode }}">
       <div class="placement-field">
         <label for="scale_pct"><span>Scale</span><span id="scale_pct_val">{{ scale_pct|round(0)|int }}%</span></label>
-        <input type="range" id="scale_pct" name="scale_pct" min="10" max="150" step="1" value="{{ scale_pct|round(0)|int }}"
+        <input type="range" id="scale_pct" name="scale_pct" min="{{ scale_pct_min }}" max="{{ scale_pct_max }}" step="1" value="{{ scale_pct|round(0)|int }}"
                oninput="document.getElementById('scale_pct_val').textContent = this.value + '%'">
       </div>
       <div class="placement-grid">
         <div class="placement-field">
           <label for="offset_x_mm">X offset (mm)</label>
-          <input type="number" id="offset_x_mm" name="offset_x_mm" value="{{ offset_x_mm }}" step="0.5" min="-40" max="40">
+          <input type="number" id="offset_x_mm" name="offset_x_mm" value="{{ offset_x_mm }}" step="0.5" min="{{ offset_mm_min }}" max="{{ offset_mm_max }}">
         </div>
         <div class="placement-field">
           <label for="offset_y_mm">Y offset (mm)</label>
-          <input type="number" id="offset_y_mm" name="offset_y_mm" value="{{ offset_y_mm }}" step="0.5" min="-40" max="40">
+          <input type="number" id="offset_y_mm" name="offset_y_mm" value="{{ offset_y_mm }}" step="0.5" min="{{ offset_mm_min }}" max="{{ offset_mm_max }}">
         </div>
         <div class="placement-field">
           <label for="print_height_mm">Print height (mm)</label>
-          <input type="number" id="print_height_mm" name="print_height_mm" value="{{ print_height_mm }}" step="0.05" min="0.5" max="15">
+          <input type="number" id="print_height_mm" name="print_height_mm" value="{{ print_height_mm }}" step="0.05" min="{{ print_height_mm_min }}" max="{{ print_height_mm_max }}">
         </div>
         <div class="placement-field">
           <label for="extrusion_per_mm">Extrusion per mm</label>
-          <input type="number" id="extrusion_per_mm" name="extrusion_per_mm" value="{{ extrusion_per_mm }}" step="0.0001" min="0.0005" max="0.05">
+          <input type="number" id="extrusion_per_mm" name="extrusion_per_mm" value="{{ extrusion_per_mm }}" step="0.0001" min="{{ extrusion_per_mm_min }}" max="{{ extrusion_per_mm_max }}">
         </div>
       </div>
       <button type="submit">Regenerate with these settings</button>

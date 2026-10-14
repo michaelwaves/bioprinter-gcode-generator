@@ -30,9 +30,9 @@ TRACE_MODES = {
 # session_id -> temp directory holding that session's uploaded image + output/
 SESSIONS = {}
 
-SCALE_PCT_MIN, SCALE_PCT_MAX = 10.0, 150.0
-OFFSET_MM_LIMIT = 40.0  # generous clamp; design_bounds_check catches the real dish-radius violation
-PRINT_HEIGHT_MM_MIN, PRINT_HEIGHT_MM_MAX = 0.5, 15.0  # sane physical bounds for a needle Z height
+SCALE_PCT_MIN, SCALE_PCT_MAX = 10.0, 500.0
+OFFSET_MM_LIMIT = 100.0  # generous clamp; design_bounds_check catches the real dish-radius violation
+PRINT_HEIGHT_MM_MIN, PRINT_HEIGHT_MM_MAX = 0, 15.0  # sane physical bounds for a needle Z height
 EXTRUSION_PER_MM_MIN, EXTRUSION_PER_MM_MAX = 0.0005, 0.05  # mm^3/mm -- wide enough for recalibration
 
 
@@ -76,10 +76,34 @@ def _parse_placement_fields(form):
     return scale_pct, offset_x_mm, offset_y_mm, print_height_mm, extrusion_per_mm
 
 
+def _form_bounds():
+    """
+    The clamp ranges above, handed to the templates so the form's min/max attributes come
+    from these constants instead of being retyped in the HTML. Without this, widening a
+    clamp here has no visible effect: the browser rejects the value before it is ever
+    submitted, so the wider server-side range is never reached.
+    """
+    return dict(
+        scale_pct_min=f"{SCALE_PCT_MIN:g}",
+        scale_pct_max=f"{SCALE_PCT_MAX:g}",
+        offset_mm_min=f"{-OFFSET_MM_LIMIT:g}",
+        offset_mm_max=f"{OFFSET_MM_LIMIT:g}",
+        print_height_mm_min=f"{PRINT_HEIGHT_MM_MIN:g}",
+        print_height_mm_max=f"{PRINT_HEIGHT_MM_MAX:g}",
+        extrusion_per_mm_min=f"{EXTRUSION_PER_MM_MIN:g}",
+        extrusion_per_mm_max=f"{EXTRUSION_PER_MM_MAX:g}",
+        plate_shape=ltg.PLATE_SHAPE,
+        plate_side_mm=f"{ltg.PLATE_SIDE_MM:g}",
+        print_area_radius_mm=f"{ltg.PRINT_AREA_RADIUS_MM:g}",
+        agar_volume_ml=f"{ltg.DEFAULT_AGAR_VOLUME_ML:g}",
+    )
+
+
 def _index_defaults():
     return dict(
         default_print_height_mm=f"{ltg.DEFAULT_PRINT_HEIGHT_MM:.2f}",
         default_extrusion_per_mm=f"{ltg.DEFAULT_EXTRUSION_PER_MM:.4f}",
+        **_form_bounds(),
     )
 
 
@@ -183,6 +207,7 @@ def _result_template_args(result):
         print_height_mm=f"{result['print_height_mm']:.2f}",
         extrusion_per_mm=f"{result['extrusion_per_mm']:.4f}",
         warnings=warnings,
+        **_form_bounds(),
     )
 
 
@@ -197,4 +222,4 @@ def download_gcode(session_id):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=False, port=5000)

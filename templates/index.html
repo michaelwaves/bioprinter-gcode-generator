@@ -140,34 +140,34 @@
       <label class="field-label">Placement</label>
       <div class="placement-field">
         <label for="scale_pct"><span>Scale</span><span id="scale_pct_val">100%</span></label>
-        <input type="range" id="scale_pct" name="scale_pct" min="10" max="150" step="1" value="100"
+        <input type="range" id="scale_pct" name="scale_pct" min="{{ scale_pct_min }}" max="{{ scale_pct_max }}" step="1" value="100"
                oninput="document.getElementById('scale_pct_val').textContent = this.value + '%'">
       </div>
       <div class="placement-grid">
         <div class="placement-field">
           <label for="offset_x_mm">X offset (mm)</label>
-          <input type="number" id="offset_x_mm" name="offset_x_mm" value="0" step="0.5" min="-40" max="40">
+          <input type="number" id="offset_x_mm" name="offset_x_mm" value="0" step="0.5" min="{{ offset_mm_min }}" max="{{ offset_mm_max }}">
         </div>
         <div class="placement-field">
           <label for="offset_y_mm">Y offset (mm)</label>
-          <input type="number" id="offset_y_mm" name="offset_y_mm" value="0" step="0.5" min="-40" max="40">
+          <input type="number" id="offset_y_mm" name="offset_y_mm" value="0" step="0.5" min="{{ offset_mm_min }}" max="{{ offset_mm_max }}">
         </div>
       </div>
-      <p class="placement-hint">100% auto-fits the design to the plate, centered. Offsets shift it from center; the result page will warn if it no longer fits the dish.</p>
+      <p class="placement-hint">100% auto-fits the design to the plate, centered. Offsets shift it from center; the result page will warn if it no longer fits.</p>
     </fieldset>
 
     <fieldset>
       <label class="field-label" for="print_height_mm">Print height (mm)</label>
       <div class="placement-field">
-        <input type="number" id="print_height_mm" name="print_height_mm" value="{{ default_print_height_mm }}" step="0.05" min="0.5" max="15">
+        <input type="number" id="print_height_mm" name="print_height_mm" value="{{ default_print_height_mm }}" step="0.05" min="{{ print_height_mm_min }}" max="{{ print_height_mm_max }}">
       </div>
-      <p class="placement-hint">Defaults to the agar surface height for a 20mL pour in the 85mm dish (volume &divide; plate area), plus 0.1mm clearance. Adjust if you poured a different volume.</p>
+      <p class="placement-hint">Defaults to the agar surface height for a {{ agar_volume_ml }}mL pour on the {{ plate_side_mm }}mm {{ plate_shape }} plate (volume &divide; plate floor area), plus 0.1mm clearance. Adjust if you poured a different volume.</p>
     </fieldset>
 
     <fieldset>
       <label class="field-label" for="extrusion_per_mm">Extrusion per mm (mm&sup3;/mm)</label>
       <div class="placement-field">
-        <input type="number" id="extrusion_per_mm" name="extrusion_per_mm" value="{{ default_extrusion_per_mm }}" step="0.0001" min="0.0005" max="0.05">
+        <input type="number" id="extrusion_per_mm" name="extrusion_per_mm" value="{{ default_extrusion_per_mm }}" step="0.0001" min="{{ extrusion_per_mm_min }}" max="{{ extrusion_per_mm_max }}">
       </div>
       <p class="placement-hint">Defaults to the lowest value that worked in past physical testing. Lower = thinner bead.</p>
     </fieldset>
@@ -175,7 +175,7 @@
     <button type="submit">Generate G-code</button>
   </form>
 
-  <footer>Dark pixels are treated as foreground. Design is scaled to fit the printable plate area, and paths are clipped to the physical dish edge.</footer>
+  <footer>Dark pixels are treated as foreground. Design is scaled to fit the printable plate area, and paths are clipped to a {{ print_area_radius_mm }}mm-radius circle centred on the plate.</footer>
 </main>
 </body>
 </html>

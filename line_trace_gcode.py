@@ -41,17 +41,146 @@ TRAVEL_HEIGHT_Z = 4.800
 DEFAULT_EXTRUSION_PER_MM = 0.0030  # mm^3/mm -- lowest value that worked in past physical testing
 RETRACT_E = 0.02
 
-MAX_AREA_MM = 79.0  # mm -- max span of the longer image dimension. 85mm dish, radius 42.5mm,
-                     # minus ~2mm spread and ~1mm edge buffer = 39.5mm max design radius = 79mm diameter
 DARK_THRESHOLD = 128
 MIN_CONTOUR_LEN_PX = 15
 
-DISH_DIAMETER_MM = 85.0  # physical dish -- kept only as a reference measurement now
-DISH_RADIUS_MM = DISH_DIAMETER_MM / 2.0
-PRINT_AREA_RADIUS_MM = MAX_AREA_MM / 2.0  # 39.5mm -- the actual hard boundary paths are clipped to;
-                                           # this is the buffered print area, not the raw dish edge, so
-                                           # nothing prints in that edge margin even if a path reaches it.
-DEFAULT_AGAR_VOLUME_ML = 20.0
+# ---- plate presets ----
+# Add a plate by adding an entry here; nothing else needs editing. The key is what the form
+# submits, "label" is what the dropdown shows.
+#
+#   shape           "round" or "square". This affects the agar-depth math (floor area is
+#                   pi*r^2 vs side^2) and the preview outline. It does NOT change the path
+#                   clip, which is always a circle -- see print_area_radius_mm below.
+#   size_mm         Flat inner floor dimension: diameter for round, side for square. This is
+#                   the usable flat base, NOT the outer rim-to-rim size. Plates with a sloped
+#                   rim have a flat floor noticeably smaller than their nominal size.
+#   edge_margin_mm  Pulled in from the edge before printing: ~2mm bead spread + ~1mm buffer.
+#   agar_volume_ml  Default pour. Floor area grows with the SQUARE of plate size, so a volume
+#                   that gave a good depth on a small dish is a very thin layer on a big
+#                   plate -- each preset carries its own volume for that reason.
+#   center_xy       Bed coordinates the plate centre sits at. Everything is placed relative
+#                   to this, so it must match where the plate physically sits on the bed.
+PLATE_PRESETS = {
+    "petri_85": {
+        "label": "85mm Petri dish",
+        "shape": "round",
+        "size_mm": 85.0,
+        "edge_margin_mm": 3.0,
+        "agar_volume_ml": 20.0,
+        "center_xy": (100.0, 100.0),
+    },
+    "petri_100": {
+        "label": "100mm Petri dish",
+        "shape": "round",
+        "size_mm": 100.0,
+        "edge_margin_mm": 3.0,
+        "agar_volume_ml": 28.0,
+        "center_xy": (100.0, 100.0),
+    },
+    "square_150": {
+        "label": "150mm square plate",
+        "shape": "square",
+        "size_mm": 150.0,
+        "edge_margin_mm": 3.0,
+        "agar_volume_ml": 70.0,
+        "center_xy": (100.0, 100.0),
+    },
+}
+DEFAULT_PLATE_KEY = "square_150"
+
+
+class Plate:
+    """
+    Resolved geometry for one plate preset. Everything downstream reads these instead of
+    module-level constants, so switching preset switches the whole pipeline consistently.
+    """
+
+    def __init__(self, key, label, shape, size_mm, edge_margin_mm, agar_volume_ml, center_xy):
+        self.key = key
+        self.label = label
+        self.shape = shape
+        self.size_mm = float(size_mm)
+        self.edge_margin_mm = float(edge_margin_mm)
+        self.agar_volume_ml = float(agar_volume_ml)
+        self.center_x, self.center_y = (float(center_xy[0]), float(center_xy[1]))
+
+    @classmethod
+    def from_key(cls, key):
+        if key not in PLATE_PRESETS:
+            raise KeyError(f"unknown plate preset {key!r}; known: {sorted(PLATE_PRESETS)}")
+        return cls(key=key, **PLATE_PRESETS[key])
+
+    @property
+    def print_area_radius_mm(self):
+        """
+        Radius of the hard boundary paths are clipped to -- the buffered print area, not the
+        raw plate edge, so nothing prints in the edge margin even if a path reaches it.
+
+        The clip in clip_paths_to_dish is a CIRCLE for every plate shape, so on a square
+        plate this is the circle INSCRIBED in the square. A radius big enough to reach the
+        square's corners would be (side/2)*sqrt(2) -- 106.1mm on a 150mm plate -- and that
+        circle bulges 31mm past the plate edge at each of the four edge midpoints, where the
+        needle would extrude onto the bed. The inscribed circle is the largest circle wholly
+        on the plate. Reaching the corners needs a rectangular clip, not a bigger radius.
+        """
+        return self.size_mm / 2.0 - self.edge_margin_mm
+
+    @property
+    def max_area_mm(self):
+        """Max span of the longer image dimension at scale_pct=100."""
+        return self.print_area_radius_mm * 2.0
+
+    @property
+    def floor_area_mm2(self):
+        """Flat floor area the poured agar spreads across."""
+        if self.shape == "square":
+            return self.size_mm * self.size_mm
+        return math.pi * (self.size_mm / 2.0) ** 2
+
+    @property
+    def unreachable_corner_fraction(self):
+        """
+        Fraction of the plate floor the circular clip cannot reach. 0 for a round plate;
+        1 - pi/4 ~= 21.5% for a square one (before the edge margin).
+        """
+        if self.shape != "square":
+            return 0.0
+        return max(0.0, 1.0 - self.floor_area_circle_equivalent / self.floor_area_mm2)
+
+    @property
+    def floor_area_circle_equivalent(self):
+        return math.pi * (self.size_mm / 2.0) ** 2
+
+    def agar_surface_height_mm(self, volume_ml=None):
+        """
+        Height of the agar surface (mm) for a poured volume, assuming a flat fill:
+        height = volume / floor area. 1 mL == 1000 mm^3, so mL converts directly.
+        """
+        if volume_ml is None:
+            volume_ml = self.agar_volume_ml
+        return (volume_ml * 1000.0) / self.floor_area_mm2
+
+    def default_print_height_mm(self, clearance_mm=None):
+        if clearance_mm is None:
+            clearance_mm = PRINT_HEIGHT_CLEARANCE_MM
+        return self.agar_surface_height_mm() + clearance_mm
+
+    def extent_mm(self):
+        """(min_x, min_y, max_x, max_y) of the physical plate footprint on the bed."""
+        half = self.size_mm / 2.0
+        return (self.center_x - half, self.center_y - half,
+                self.center_x + half, self.center_y + half)
+
+    def as_template_dict(self):
+        return dict(
+            key=self.key, label=self.label, shape=self.shape,
+            size_mm=f"{self.size_mm:g}",
+            print_area_radius_mm=f"{self.print_area_radius_mm:g}",
+            max_area_mm=f"{self.max_area_mm:g}",
+            agar_volume_ml=f"{self.agar_volume_ml:g}",
+            agar_depth_mm=f"{self.agar_surface_height_mm():.2f}",
+            center_x=f"{self.center_x:g}", center_y=f"{self.center_y:g}",
+        )
 # clearance kept between the print-height Z and the travel-height Z, preserved from the original
 # fixed PRINT_HEIGHT_Z=4.500 / TRAVEL_HEIGHT_Z=4.800 pair so the retract/travel gap doesn't change
 # just because print height is now computed instead of hardcoded.
@@ -61,16 +190,25 @@ PRINT_FEED_MM_PER_MIN = 600.0  # feed rate used for the actual line-tracing move
 EXTRUDE_TRAIL_SEC = 1.0  # stop extruding this many seconds before movement finishes at the end of the whole print
 
 
-def agar_surface_height_mm(volume_ml=DEFAULT_AGAR_VOLUME_ML, dish_diameter_mm=DISH_DIAMETER_MM):
+def plate_floor_area_mm2(shape=PLATE_SHAPE, side_mm=PLATE_SIDE_MM):
+    """Flat floor area (mm^2) the poured agar spreads across."""
+    if shape == "square":
+        return side_mm * side_mm
+    return math.pi * (side_mm / 2.0) ** 2
+
+
+def agar_surface_height_mm(volume_ml=DEFAULT_AGAR_VOLUME_ML, shape=PLATE_SHAPE, side_mm=PLATE_SIDE_MM):
     """
-    Height of the agar surface (mm) for a given poured volume in a cylindrical
-    dish, assuming a flat fill: height = volume / (pi * radius^2).
+    Height of the agar surface (mm) for a given poured volume, assuming a flat
+    fill: height = volume / plate floor area.
     1 mL == 1000 mm^3, so a volume in mL converts directly.
+
+    A square plate spreads the same pour over side^2 instead of pi*r^2 -- ~27% more
+    area -- so the surface sits lower than the circular formula would predict. The
+    floor area also grows with the square of the plate size, so a pour sized for the
+    old 85mm dish is a far thinner layer on a 150mm plate.
     """
-    volume_mm3 = volume_ml * 1000.0
-    radius_mm = dish_diameter_mm / 2.0
-    area_mm2 = math.pi * radius_mm ** 2
-    return volume_mm3 / area_mm2
+    return (volume_ml * 1000.0) / plate_floor_area_mm2(shape, side_mm)
 
 
 PRINT_HEIGHT_CLEARANCE_MM = 0.1  # keep the needle just above the computed agar surface, not touching it
@@ -773,9 +911,18 @@ def process_image(path, trace_mode="both", scale_pct=100.0, offset_x_mm=0.0, off
     circle = plt.Circle((DISH_CENTER_X, DISH_CENTER_Y), PRINT_AREA_RADIUS_MM, facecolor="none", edgecolor="tab:red", linewidth=1.5, linestyle="-")
     ax.add_patch(circle)
 
-    # Draw the physical dish edge, for reference only (not the clip boundary)
-    physical_circle = plt.Circle((DISH_CENTER_X, DISH_CENTER_Y), DISH_RADIUS_MM, facecolor="none", edgecolor="tab:gray", linewidth=1.2, linestyle=":")
-    ax.add_patch(physical_circle)
+    # Draw the physical plate edge, for reference only (not the clip boundary). On a square
+    # plate the red clip circle above is the inscribed circle, so the gap between the circle
+    # and these corners is plate area the circular clip cannot reach.
+    if PLATE_SHAPE == "square":
+        physical_edge = plt.Rectangle(
+            (DISH_CENTER_X - PLATE_SIDE_MM / 2.0, DISH_CENTER_Y - PLATE_SIDE_MM / 2.0),
+            PLATE_SIDE_MM, PLATE_SIDE_MM,
+            facecolor="none", edgecolor="tab:gray", linewidth=1.2, linestyle=":")
+    else:
+        physical_edge = plt.Circle((DISH_CENTER_X, DISH_CENTER_Y), DISH_RADIUS_MM,
+                                   facecolor="none", edgecolor="tab:gray", linewidth=1.2, linestyle=":")
+    ax.add_patch(physical_edge)
 
     # Draw origin cross at dish center
     ax.plot([DISH_CENTER_X], [DISH_CENTER_Y], marker="+", color="gray")
