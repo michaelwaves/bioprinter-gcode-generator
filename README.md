@@ -81,7 +81,9 @@ npx vercel          # preview deploy
 npx vercel --prod   # production
 ```
 
-`vercel.json` rewrites all paths to `api/index.py`, which exposes the Flask `app`.
+Vercel detects the root `app.py` and serves its Flask `app` directly; `vercel.json` only
+sets memory and `maxDuration` for it. **Don't add an `api/` entrypoint** — an earlier version
+had `api/index.py` and Vercel ignored it, importing `/var/task/app.py` instead.
 
 The app holds **no server-side state** — this is what makes it work on serverless.
 Each request carries the working-resolution design as a base64 hidden form field
@@ -110,9 +112,12 @@ them when the installed stub is missing. Three details that matter if you touch 
   a path ending in `i`.
 - Parsing is still done **by lazy_loader itself** — the original function is called with the
   new path — so this can't drift from how scikit-image expects its namespace built.
-- `lazy_stub_fix.install()` runs in `api/index.py` **before** `from app import app`, because
-  it has to beat the `import skimage` inside `line_trace_gcode.py`. It's a no-op where the
-  real stubs exist, so local runs are unaffected.
+- `lazy_stub_fix.install()` is called **inside `line_trace_gcode.py`, immediately above its
+  `from skimage import ...`** — deliberately next to the import it protects, not in an entry
+  point. It first lived in `api/index.py`, which Vercel never imported (it serves the root
+  `app.py`), so the shim silently did nothing and the deploy failed with the stubs sitting
+  right there in the bundle. A guard that the host can route around is not a guard. It's a
+  no-op where the real stubs exist, so local runs and the CLI are unaffected.
 
 **scikit-image is pinned exactly in requirements.txt** because the shipped stubs must match
 the installed version. To bump it, refresh the stubs:
@@ -125,11 +130,17 @@ done
 ```
 
 To verify a fix without deploying, reproduce the host behaviour by stripping the stubs from
-a scratch venv:
+a scratch venv and importing the app the way Vercel does (`from app import app`, from a
+different working directory):
 
 ```
 find /path/to/scratch-venv -name '*.pyi' -delete
+cd /tmp && /path/to/scratch-venv/bin/python -c \
+  "import sys; sys.path.insert(0,'/path/to/repo'); from app import app; print('ok')"
 ```
+
+Import it through the same entry point the host uses. Testing a different entry point is
+what hid this bug the first time.
 
 ### Constraints on the free (Hobby) plan
 

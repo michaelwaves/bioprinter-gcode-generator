@@ -25,6 +25,22 @@ from functools import lru_cache
 
 from PIL import Image
 import numpy as np
+
+# MUST come before the scikit-image import below. Some hosts (Vercel) strip the `.pyi`
+# stubs that scikit-image parses at import time to build its namespace, which makes
+# `import skimage` raise. The shim lives next to the import it protects rather than in an
+# entry-point module, because the host picks its own entry point -- an earlier version put
+# it in api/index.py, which Vercel never imported, so the fix silently did nothing.
+# No-op wherever the real stubs are present.
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import lazy_stub_fix as _lazy_stub_fix
+except ImportError:
+    pass
+else:
+    _lazy_stub_fix.install()
+
 from skimage import measure, morphology
 
 # ---- parameters ----

@@ -59,7 +59,15 @@ def install():
             parts = package_name.split(".")
             shipped = os.path.join(STUB_DIR, *parts, "__init__.pyi.txt")
             if not os.path.exists(shipped):
-                raise  # not one we carry a copy of; the real error is the useful one
+                # Re-raise with both paths named. The bare upstream message only says the
+                # installed stub is missing, which is equally consistent with "the shim
+                # never ran" and "the shim ran but its stubs weren't deployed" -- and those
+                # need opposite fixes. Say which it is.
+                raise ValueError(
+                    f"{package_name}: installed stub missing AND no shipped copy at "
+                    f"{shipped!r}. Check that vendor_stubs/ is deployed (it must not be "
+                    f"listed in .vercelignore) and that it covers this package."
+                ) from None
             # attach_stub only accepts a path ending in "i", so stage it under that name.
             # On a serverless host the temp dir is the one writable location.
             staged = os.path.join(cache_root, *parts, "__init__.pyi")
