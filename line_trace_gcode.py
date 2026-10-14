@@ -26,14 +26,8 @@ from functools import lru_cache
 from PIL import Image
 import numpy as np
 from skimage import measure, morphology
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.collections import LineCollection
 
 # ---- parameters ----
-DISH_CENTER_X = 100.0
-DISH_CENTER_Y = 100.0
 START_Z = 5.000
 PRINT_HEIGHT_Z = 4.500
 TRAVEL_HEIGHT_Z = 4.800
@@ -190,29 +184,17 @@ PRINT_FEED_MM_PER_MIN = 600.0  # feed rate used for the actual line-tracing move
 EXTRUDE_TRAIL_SEC = 1.0  # stop extruding this many seconds before movement finishes at the end of the whole print
 
 
-def plate_floor_area_mm2(shape=PLATE_SHAPE, side_mm=PLATE_SIDE_MM):
-    """Flat floor area (mm^2) the poured agar spreads across."""
-    if shape == "square":
-        return side_mm * side_mm
-    return math.pi * (side_mm / 2.0) ** 2
-
-
-def agar_surface_height_mm(volume_ml=DEFAULT_AGAR_VOLUME_ML, shape=PLATE_SHAPE, side_mm=PLATE_SIDE_MM):
-    """
-    Height of the agar surface (mm) for a given poured volume, assuming a flat
-    fill: height = volume / plate floor area.
-    1 mL == 1000 mm^3, so a volume in mL converts directly.
-
-    A square plate spreads the same pour over side^2 instead of pi*r^2 -- ~27% more
-    area -- so the surface sits lower than the circular formula would predict. The
-    floor area also grows with the square of the plate size, so a pour sized for the
-    old 85mm dish is a far thinner layer on a 150mm plate.
-    """
-    return (volume_ml * 1000.0) / plate_floor_area_mm2(shape, side_mm)
-
-
 PRINT_HEIGHT_CLEARANCE_MM = 0.1  # keep the needle just above the computed agar surface, not touching it
-DEFAULT_PRINT_HEIGHT_MM = agar_surface_height_mm() + PRINT_HEIGHT_CLEARANCE_MM
+
+# Resolved default, used by the CLI and as the fallback when no plate is passed in. The web
+# app resolves a Plate per request from the submitted preset key instead.
+DEFAULT_PLATE = Plate.from_key(DEFAULT_PLATE_KEY)
+DEFAULT_PRINT_HEIGHT_MM = DEFAULT_PLATE.default_print_height_mm()
+
+
+def plate_choices():
+    """[(key, label)] in declaration order, for building the form dropdown."""
+    return [(k, v["label"]) for k, v in PLATE_PRESETS.items()]
 
 # Hybrid path parameters
 OUTLINE_MIN_RADIUS_PX = 3  # include outline for regions whose medial radius (px) >= this
@@ -231,7 +213,7 @@ def find_images(folder):
     return sorted(set(files))
 
 
-def prepare_image_for_print(path, out_path=None, trace_mode="both", max_side_px=MAX_TRACE_SIDE_PX):
+def prepare_image_for_print(path_or_image, out_path=None, trace_mode="both", max_side_px=MAX_TRACE_SIDE_PX):
     """
     Load the source image once, threshold it into a foreground mask according to
     trace_mode, and downsample that mask (if needed) -- all in a single pass.
@@ -242,6 +224,8 @@ def prepare_image_for_print(path, out_path=None, trace_mode="both", max_side_px=
     didn't match what got used later for mm scaling. This is now the one place
     dark-pixel thresholding and resolution reduction happen; every downstream
     caller uses the same mask and the same (h, w).
+
+    path_or_image may be a filesystem path or a PIL Image.
 
     Returns (preview_image, mask, h, w) where mask/h/w are already at the final
     working resolution used for path extraction AND mm scaling.
@@ -256,7 +240,11 @@ def prepare_image_for_print(path, out_path=None, trace_mode="both", max_side_px=
     # Verified this is a no-op (byte-identical output) on plain RGB, grayscale,
     # and fully-opaque RGBA images -- it only changes anything for pixels that
     # are actually partially/fully transparent.
-    img = Image.open(path).convert("RGBA")
+    # Accepts a path or an already-loaded PIL Image so an upload can be processed from
+    # memory, without needing a writable filesystem to stage it on.
+    img = (path_or_image if isinstance(path_or_image, Image.Image)
+           else Image.open(path_or_image))
+    img = img.convert("RGBA")
     white_bg = Image.fromarray(np.full((*img.size[::-1], 4), 255, dtype=np.uint8), mode="RGBA")
     img = Image.alpha_composite(white_bg, img).convert("L")
     arr = np.array(img)
@@ -543,31 +531,33 @@ def hybrid_paths_from_mask(mask, h, w, trace_mode="both"):
 
 
 def pixel_center_and_scale(mask, h, w, return_legacy=True,
-                            scale_pct=100.0, offset_x_mm=0.0, offset_y_mm=0.0):
+                            scale_pct=100.0, offset_x_mm=0.0, offset_y_mm=0.0, plate=None):
     """
     Compute the image bounding box size and placement for the agar plate.
     Returns either (pixel_to_mm, origin_x, origin_y) for compatibility or
     (area_w_mm, area_h_mm, origin_x, origin_y) for the main workflow.
 
-    scale_pct scales the auto-fit footprint (100 = fills MAX_AREA_MM as
+    scale_pct scales the auto-fit footprint (100 = fills the plate's max_area_mm as
     before). offset_x_mm/offset_y_mm shift the origin away from the
     auto-centered position -- positive X is right, positive Y is up, matching
     the existing mm coordinate convention used elsewhere in this file (see
     contour_to_mm: y is flipped from pixel row order, not offset here).
     """
+    plate = plate or DEFAULT_PLATE
+    max_area_mm = plate.max_area_mm
     if w >= h:
-        area_w_mm = MAX_AREA_MM
-        area_h_mm = MAX_AREA_MM * h / w
+        area_w_mm = max_area_mm
+        area_h_mm = max_area_mm * h / w
     else:
-        area_h_mm = MAX_AREA_MM
-        area_w_mm = MAX_AREA_MM * w / h
+        area_h_mm = max_area_mm
+        area_w_mm = max_area_mm * w / h
 
     scale_factor = scale_pct / 100.0
     area_w_mm *= scale_factor
     area_h_mm *= scale_factor
 
-    origin_x = DISH_CENTER_X - area_w_mm / 2.0 + offset_x_mm
-    origin_y = DISH_CENTER_Y - area_h_mm / 2.0 + offset_y_mm
+    origin_x = plate.center_x - area_w_mm / 2.0 + offset_x_mm
+    origin_y = plate.center_y - area_h_mm / 2.0 + offset_y_mm
 
     if return_legacy:
         pixel_to_mm = area_w_mm / (w - 1)
@@ -576,25 +566,25 @@ def pixel_center_and_scale(mask, h, w, return_legacy=True,
     return area_w_mm, area_h_mm, origin_x, origin_y
 
 
-def _farthest_corner_mm(area_w_mm, area_h_mm, origin_x, origin_y):
+def _farthest_corner_mm(area_w_mm, area_h_mm, origin_x, origin_y, plate):
     corners = [
         (origin_x, origin_y),
         (origin_x + area_w_mm, origin_y),
         (origin_x, origin_y + area_h_mm),
         (origin_x + area_w_mm, origin_y + area_h_mm),
     ]
-    return max(math.hypot(x - DISH_CENTER_X, y - DISH_CENTER_Y) for x, y in corners)
+    return max(math.hypot(x - plate.center_x, y - plate.center_y) for x, y in corners)
 
 
-def design_bounds_check(mask, h, w, area_w_mm, area_h_mm, origin_x, origin_y):
+def design_bounds_check(mask, h, w, area_w_mm, area_h_mm, origin_x, origin_y, plate=None):
     """
     Check whether the current placement's bounding-box corners extend
     farther from the dish center than the DEFAULT auto-fit placement
     (scale_pct=100, no offset) would for the same image.
 
     This is deliberately NOT a check against the literal dish radius
-    (MAX_AREA_MM / 2): the existing auto-fit only caps the longer image
-    dimension to MAX_AREA_MM, so a square or non-circular image's bounding
+    (max_area_mm / 2): the existing auto-fit only caps the longer image
+    dimension to max_area_mm, so a square or non-circular image's bounding
     box already extends past the inscribed dish circle at its corners by
     design, even with no scale/offset adjustment applied. Warning on that
     baseline case would be a false positive. What scale/offset controls can
@@ -603,11 +593,13 @@ def design_bounds_check(mask, h, w, area_w_mm, area_h_mm, origin_x, origin_y):
 
     Returns (fits, farthest_corner_mm, baseline_farthest_mm).
     """
+    plate = plate or DEFAULT_PLATE
     baseline_w, baseline_h, baseline_ox, baseline_oy = pixel_center_and_scale(
         mask, h, w, return_legacy=False, scale_pct=100.0, offset_x_mm=0.0, offset_y_mm=0.0,
+        plate=plate,
     )
-    baseline_farthest = _farthest_corner_mm(baseline_w, baseline_h, baseline_ox, baseline_oy)
-    farthest = _farthest_corner_mm(area_w_mm, area_h_mm, origin_x, origin_y)
+    baseline_farthest = _farthest_corner_mm(baseline_w, baseline_h, baseline_ox, baseline_oy, plate)
+    farthest = _farthest_corner_mm(area_w_mm, area_h_mm, origin_x, origin_y, plate)
     return farthest <= baseline_farthest + 1e-6, farthest, baseline_farthest
 
 
@@ -750,8 +742,11 @@ def optimize_path_order(all_paths_mm, start_xy=None):
     return ordered
 
 
-def generate_gcode(all_contours_mm, print_height_mm=DEFAULT_PRINT_HEIGHT_MM,
-                    extrusion_per_mm=DEFAULT_EXTRUSION_PER_MM):
+def generate_gcode(all_contours_mm, print_height_mm=None,
+                    extrusion_per_mm=DEFAULT_EXTRUSION_PER_MM, plate=None):
+    plate = plate or DEFAULT_PLATE
+    if print_height_mm is None:
+        print_height_mm = plate.default_print_height_mm()
     travel_height_mm = print_height_mm + TRAVEL_CLEARANCE_MM
     # keep the pre-move Z comfortably above the travel height regardless of what
     # print_height_mm is set to, so homing/approach never collides with the agar
@@ -759,11 +754,13 @@ def generate_gcode(all_contours_mm, print_height_mm=DEFAULT_PRINT_HEIGHT_MM,
 
     lines = [
         "; Continuous line-trace pattern (black regions only)",
-        "; Agar-printing workflow: start at dish center and keep the needle near the surface",
+        f"; Plate: {plate.label} ({plate.shape}, {plate.size_mm:g}mm, "
+        f"print area r={plate.print_area_radius_mm:g}mm)",
+        "; Agar-printing workflow: start at plate center and keep the needle near the surface",
         "G21 ; units mm",
         "G90 ; absolute positioning",
         f"G0 Z{start_z:.3f} F6000",
-        f"G0 X{DISH_CENTER_X:.3f} Y{DISH_CENTER_Y:.3f} F3000",
+        f"G0 X{plate.center_x:.3f} Y{plate.center_y:.3f} F3000",
         "M83",
         "G92 E0",
         f"G1 Z{print_height_mm:.3f} F600",
@@ -820,44 +817,124 @@ def generate_gcode(all_contours_mm, print_height_mm=DEFAULT_PRINT_HEIGHT_MM,
     return "\n".join(lines)
 
 
-def process_image(path, trace_mode="both", scale_pct=100.0, offset_x_mm=0.0, offset_y_mm=0.0,
-                   print_height_mm=None, extrusion_per_mm=None):
+def build_preview_svg(contours_mm, plate, extrusion_per_mm, width_px=620):
+    """
+    Render the toolpath preview as inline SVG in mm coordinates.
+
+    This replaced a matplotlib figure. matplotlib (plus fontTools and its other deps) was
+    ~45MB of the dependency bundle and was used for nothing but this one picture, which
+    mattered once the app had to fit in a serverless bundle size limit. SVG also stays sharp
+    at any zoom and needs no temp file to hand to the browser.
+
+    SVG's y axis points down and the printer's points up, so the path group is flipped with
+    a transform rather than negating every coordinate.
+    """
+    min_x, min_y, max_x, max_y = plate.extent_mm()
+    pad = 6.0
+    vb_w = (max_x - min_x) + 2 * pad
+    vb_h = (max_y - min_y) + 2 * pad
+    vx, vy = min_x - pad, min_y - pad
+    stroke_mm = max(0.25, extrusion_per_mm * PREVIEW_WIDTH_SCALE)
+
+    def esc(v):
+        return f"{v:.3f}"
+
+    out = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{esc(vx)} {esc(vy)} {esc(vb_w)} {esc(vb_h)}" '
+        f'width="{width_px}" role="img" aria-label="Toolpath preview in millimetres">',
+        '<rect x="%s" y="%s" width="%s" height="%s" fill="#fbfbf9"/>'
+        % (esc(vx), esc(vy), esc(vb_w), esc(vb_h)),
+        # Flip y so printer-up is screen-up. Inside this group, y is printer mm.
+        f'<g transform="translate(0,{esc(2 * vy + vb_h)}) scale(1,-1)">',
+    ]
+
+    # Physical plate edge (reference only, not the clip boundary).
+    if plate.shape == "square":
+        out.append(
+            '<rect x="%s" y="%s" width="%s" height="%s" fill="#fff" stroke="#9aa0a6" '
+            'stroke-width="0.6" stroke-dasharray="2 1.6"/>'
+            % (esc(min_x), esc(min_y), esc(plate.size_mm), esc(plate.size_mm)))
+    else:
+        out.append(
+            '<circle cx="%s" cy="%s" r="%s" fill="#fff" stroke="#9aa0a6" stroke-width="0.6" '
+            'stroke-dasharray="2 1.6"/>'
+            % (esc(plate.center_x), esc(plate.center_y), esc(plate.size_mm / 2.0)))
+
+    # The clip boundary. On a square plate this is the inscribed circle, so the gap between
+    # it and the dashed plate edge is area the circular clip cannot reach.
+    out.append(
+        '<circle cx="%s" cy="%s" r="%s" fill="none" stroke="#c0392b" stroke-width="0.7"/>'
+        % (esc(plate.center_x), esc(plate.center_y), esc(plate.print_area_radius_mm)))
+    out.append(
+        '<path d="M %s %s h 6 M %s %s v 6" stroke="#9aa0a6" stroke-width="0.4"/>'
+        % (esc(plate.center_x - 3), esc(plate.center_y), esc(plate.center_x), esc(plate.center_y - 3)))
+
+    for contour in contours_mm:
+        if len(contour) < 2:
+            continue
+        pts = " ".join(f"{x:.3f},{y:.3f}" for x, y in contour)
+        out.append(
+            f'<polyline points="{pts}" fill="none" stroke="#111" stroke-width="{esc(stroke_mm)}" '
+            'stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>')
+
+    out.append("</g></svg>")
+    return "".join(out)
+
+
+def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm=0.0, offset_y_mm=0.0,
+                   print_height_mm=None, extrusion_per_mm=None, plate=None, plate_key=None,
+                   out_dir=None, write_files=True, name=None):
+    """
+    Run the whole pipeline for one image and return a result dict.
+
+    path_or_image may be a filesystem path or an already-loaded PIL Image, so the web app can
+    process an upload held in memory without a temp file -- a serverless filesystem is
+    ephemeral and not shared between requests, so nothing durable can be written there.
+    write_files=False skips all disk output and returns the G-code as text only.
+    """
+    if plate is None:
+        plate = Plate.from_key(plate_key) if plate_key else DEFAULT_PLATE
     if print_height_mm is None:
-        print_height_mm = DEFAULT_PRINT_HEIGHT_MM
+        print_height_mm = plate.default_print_height_mm()
     if extrusion_per_mm is None:
         extrusion_per_mm = DEFAULT_EXTRUSION_PER_MM
-    name = os.path.splitext(os.path.basename(path))[0]
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(path)), "output")
-    os.makedirs(out_dir, exist_ok=True)
-    print(f"\n--- {name} ---")
 
-    prepared_path = os.path.join(out_dir, f"{name}_prepared.png")
-    _, mask, h, w = prepare_image_for_print(path, prepared_path, trace_mode=trace_mode)
-    print(f"prepared image: {prepared_path} ({w}x{h}px working resolution)")
+    is_path = isinstance(path_or_image, (str, os.PathLike))
+    if name is None:
+        name = os.path.splitext(os.path.basename(path_or_image))[0] if is_path else "design"
+    if write_files:
+        if out_dir is None:
+            if not is_path:
+                raise ValueError("out_dir is required when write_files=True and no path is given")
+            out_dir = os.path.join(os.path.dirname(os.path.abspath(path_or_image)), "output")
+        os.makedirs(out_dir, exist_ok=True)
+    print(f"\n--- {name} ({plate.label}) ---")
+
+    prepared_path = os.path.join(out_dir, f"{name}_prepared.png") if write_files else None
+    _, mask, h, w = prepare_image_for_print(path_or_image, prepared_path, trace_mode=trace_mode)
+    print(f"prepared image: {w}x{h}px working resolution")
 
     fg_fraction = mask.sum() / mask.size
     print(f"foreground (dark) fraction: {fg_fraction:.2%}")
     if fg_fraction > 0.9:
         print("WARNING: >90% counted as foreground -- background may also be dark. Check output before printing.")
 
-    # Build hybrid paths in pixel coordinates (row, col) at a reduced resolution.
     pixel_paths = hybrid_paths_from_mask(mask, h, w, trace_mode=trace_mode)
     print(f"{len(pixel_paths)} raw path(s) from hybrid generator")
 
     area_w_mm, area_h_mm, origin_x, origin_y = pixel_center_and_scale(
         mask, h, w, return_legacy=False,
-        scale_pct=scale_pct, offset_x_mm=offset_x_mm, offset_y_mm=offset_y_mm,
+        scale_pct=scale_pct, offset_x_mm=offset_x_mm, offset_y_mm=offset_y_mm, plate=plate,
     )
     print(f"area_w_mm: {area_w_mm:.3f}, area_h_mm: {area_h_mm:.3f}, origin_x: {origin_x:.3f}, origin_y: {origin_y:.3f}")
 
     fits_dish, farthest_corner_mm, baseline_farthest_mm = design_bounds_check(
-        mask, h, w, area_w_mm, area_h_mm, origin_x, origin_y)
+        mask, h, w, area_w_mm, area_h_mm, origin_x, origin_y, plate=plate)
     if not fits_dish:
-        print(f"WARNING: this placement's bounding box reaches {farthest_corner_mm:.1f}mm from dish "
+        print(f"WARNING: this placement's bounding box reaches {farthest_corner_mm:.1f}mm from plate "
               f"center, farther than the {baseline_farthest_mm:.1f}mm the default auto-fit placement "
               f"would reach for this image.")
 
-    # Convert pixel paths to mm coordinates
     all_contours_mm = []
     for p in pixel_paths:
         if p.shape[0] < MIN_CONTOUR_LEN_PX:
@@ -865,22 +942,19 @@ def process_image(path, trace_mode="both", scale_pct=100.0, offset_x_mm=0.0, off
         coords_mm = [contour_to_mm([(r, c)], h, w, area_w_mm, area_h_mm, origin_x, origin_y)[0] for (r, c) in p]
         all_contours_mm.append(coords_mm)
 
-    # Clip to the print area so nothing is asked to print past it -- scale/offset
-    # controls (or a generous auto-fit on a non-square image) can push parts of a
-    # design past PRINT_AREA_RADIUS_MM even when the bounding-box check above
-    # doesn't flag it, since that check only looks at the box corners.
+    # Clip to the print area so nothing is asked to print past it -- scale/offset controls
+    # (or a generous auto-fit on a non-square image) can push parts of a design past the
+    # print area even when the bounding-box check above doesn't flag it, since that check
+    # only looks at the box corners.
     all_contours_mm, was_clipped, clipped_len_mm = clip_paths_to_dish(
-        all_contours_mm, DISH_CENTER_X, DISH_CENTER_Y, PRINT_AREA_RADIUS_MM)
+        all_contours_mm, plate.center_x, plate.center_y, plate.print_area_radius_mm)
     if was_clipped:
-        print(f"WARNING: {clipped_len_mm:.1f}mm of path length fell outside the {PRINT_AREA_RADIUS_MM:.1f}mm "
-              f"print area and was clipped or dropped.")
+        print(f"WARNING: {clipped_len_mm:.1f}mm of path length fell outside the "
+              f"{plate.print_area_radius_mm:.1f}mm print area and was clipped or dropped.")
 
-    # Path order optimization (start at dish center to reduce travel)
-    start_xy = (DISH_CENTER_X, DISH_CENTER_Y)
-    all_contours_mm_ordered = optimize_path_order(all_contours_mm, start_xy=start_xy)
+    all_contours_mm_ordered = optimize_path_order(all_contours_mm, start_xy=(plate.center_x, plate.center_y))
     print(f"{len(all_contours_mm_ordered)} ordered path(s) after optimization")
 
-    # Compute total length & extrusion estimate
     total_len_mm = 0.0
     for c in all_contours_mm_ordered:
         for i in range(len(c) - 1):
@@ -888,94 +962,20 @@ def process_image(path, trace_mode="both", scale_pct=100.0, offset_x_mm=0.0, off
     print(f"total traced line length: {total_len_mm:.1f}mm")
     print(f"estimated total extrusion: {total_len_mm * extrusion_per_mm:.2f}mm")
 
-    # Generate gcode
     gcode = generate_gcode(all_contours_mm_ordered, print_height_mm=print_height_mm,
-                            extrusion_per_mm=extrusion_per_mm)
-    out_gcode_path = os.path.join(out_dir, f"{name}_line_trace.gcode")
-    with open(out_gcode_path, "w") as f:
-        f.write(gcode)
-    print(f"written: {out_gcode_path}")
+                            extrusion_per_mm=extrusion_per_mm, plate=plate)
+    out_gcode_path = None
+    if write_files:
+        out_gcode_path = os.path.join(out_dir, f"{name}_line_trace.gcode")
+        with open(out_gcode_path, "w") as f:
+            f.write(gcode)
+        print(f"written: {out_gcode_path}")
 
-    # Create preview
-    fig, axes = plt.subplots(1, 2, figsize=(11, 5.5))
-    # Left: source image
-    axes[0].imshow(Image.open(path))
-    axes[0].set_title(f"Source: {name}")
-    axes[0].axis("off")
-
-    # Right: preview in mm coordinates
-    ax = axes[1]
-    ax.set_aspect("equal")
-
-    # Draw the print area -- the hard boundary paths are now clipped to
-    circle = plt.Circle((DISH_CENTER_X, DISH_CENTER_Y), PRINT_AREA_RADIUS_MM, facecolor="none", edgecolor="tab:red", linewidth=1.5, linestyle="-")
-    ax.add_patch(circle)
-
-    # Draw the physical plate edge, for reference only (not the clip boundary). On a square
-    # plate the red clip circle above is the inscribed circle, so the gap between the circle
-    # and these corners is plate area the circular clip cannot reach.
-    if PLATE_SHAPE == "square":
-        physical_edge = plt.Rectangle(
-            (DISH_CENTER_X - PLATE_SIDE_MM / 2.0, DISH_CENTER_Y - PLATE_SIDE_MM / 2.0),
-            PLATE_SIDE_MM, PLATE_SIDE_MM,
-            facecolor="none", edgecolor="tab:gray", linewidth=1.2, linestyle=":")
-    else:
-        physical_edge = plt.Circle((DISH_CENTER_X, DISH_CENTER_Y), DISH_RADIUS_MM,
-                                   facecolor="none", edgecolor="tab:gray", linewidth=1.2, linestyle=":")
-    ax.add_patch(physical_edge)
-
-    # Draw origin cross at dish center
-    ax.plot([DISH_CENTER_X], [DISH_CENTER_Y], marker="+", color="gray")
-
-    # Prepare line segments (in mm) for plotting
-    segs = []
-    widths_pts = []
-    # convert mm->points: 1 point = 1/72 inch = 25.4/72 mm = 0.352777... mm
-    mm_per_point = 25.4 / 72.0
-    for contour in all_contours_mm_ordered:
-        if len(contour) < 2:
-            continue
-        seg_list = []
-        for (x, y) in contour:
-            seg_list.append((x, y))
-        segs.append(seg_list)
-        # visual line width (mm) from extrusion param (Option A)
-        visual_mm = extrusion_per_mm * PREVIEW_WIDTH_SCALE
-        width_pt = max(0.1, visual_mm / mm_per_point)
-        widths_pts.append(width_pt)
-
-    if segs:
-        lc = LineCollection(segs, linewidths=widths_pts, colors="black", linestyles="solid", alpha=0.9)
-        ax.add_collection(lc)
-
-    # Optionally also draw skeleton as thin red lines (helpful for debugging)
-    # We'll draw a faint red overlay showing centerlines
-    sk_color = (1.0, 0.0, 0.0, 0.35)
-    sk_segs = []
-    for contour in all_contours_mm_ordered:
-        if len(contour) < 2:
-            continue
-        sk_segs.append(contour)
-    if sk_segs:
-        lc2 = LineCollection(sk_segs, linewidths=[0.5], colors=[sk_color], linestyles="solid")
-        ax.add_collection(lc2)
-
-    ax.set_xlim(DISH_CENTER_X - DISH_RADIUS_MM - 5, DISH_CENTER_X + DISH_RADIUS_MM + 5)
-    ax.set_ylim(DISH_CENTER_Y - DISH_RADIUS_MM - 5, DISH_CENTER_Y + DISH_RADIUS_MM + 5)
-    ax.set_title(f"Preview: {len(all_contours_mm_ordered)} paths; visual scale (mm)")
-    ax.set_xlabel("X (mm)")
-    ax.set_ylabel("Y (mm)")
-    ax.grid(alpha=0.3)
-
-    plt.tight_layout()
-    preview_path = os.path.join(out_dir, f"{name}_line_trace_preview.png")
-    plt.savefig(preview_path, dpi=130)
-    plt.close(fig)
-    print(f"preview written: {preview_path}")
+    preview_svg = build_preview_svg(all_contours_mm_ordered, plate, extrusion_per_mm)
 
     return {
         "prepared_path": prepared_path,
-        "preview_path": preview_path,
+        "preview_svg": preview_svg,
         "gcode_path": out_gcode_path,
         "gcode_text": gcode,
         "n_paths": len(all_contours_mm_ordered),
@@ -995,13 +995,17 @@ def process_image(path, trace_mode="both", scale_pct=100.0, offset_x_mm=0.0, off
         "extrusion_per_mm": extrusion_per_mm,
         "was_clipped": was_clipped,
         "clipped_len_mm": clipped_len_mm,
+        "plate": plate,
     }
+
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate line-trace G-code from an image")
     parser.add_argument("images", nargs="*", help="Image files to process")
     parser.add_argument("--trace-mode", choices=["skeletonize", "edge", "both"], default="both")
+    parser.add_argument("--plate", choices=sorted(PLATE_PRESETS), default=DEFAULT_PLATE_KEY,
+                        help="plate preset to print on (default: %(default)s)")
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1031,4 +1035,4 @@ if __name__ == "__main__":
     else:
         print(f"found {len(images)} image(s)")
         for img_path in images:
-            process_image(img_path, trace_mode=args.trace_mode)
+            process_image(img_path, trace_mode=args.trace_mode, plate_key=args.plate)
