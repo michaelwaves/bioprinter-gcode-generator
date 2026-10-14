@@ -36,6 +36,17 @@
     margin-bottom: 0.5rem;
     font-size: 0.9rem;
   }
+  select {
+    display: block;
+    width: 100%;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fcfcfa;
+    font-size: 0.95rem;
+    font-family: inherit;
+    margin-bottom: 0.75rem;
+  }
   input[type="file"] {
     display: block;
     width: 100%;
@@ -124,6 +135,21 @@
   <form action="/generate" method="post" enctype="multipart/form-data">
     <label class="field-label" for="image">Source image (PNG or JPEG)</label>
     <input type="file" id="image" name="image" accept=".png,.jpg,.jpeg" required>
+    <p class="placement-hint">Max {{ max_upload_mb }}MB. Larger designs are fine &mdash; just resize
+      the file first; tracing downsamples to {{ working_resolution_cap }}px anyway.</p>
+
+    <fieldset>
+      <label class="field-label" for="plate_key">Plate</label>
+      <select id="plate_key" name="plate_key" onchange="syncPlate(this)">
+        {% for p in plates %}
+        <option value="{{ p.key }}" data-print-height="{{ p.default_print_height_mm }}"
+                data-radius="{{ p.print_area_radius_mm }}" data-span="{{ p.max_area_mm }}"
+                data-volume="{{ p.agar_volume_ml }}" data-shape="{{ p.shape }}"
+                {% if p.key == selected_plate_key %}selected{% endif %}>{{ p.label }}</option>
+        {% endfor %}
+      </select>
+      <p class="placement-hint" id="plate_hint"></p>
+    </fieldset>
 
     <fieldset>
       <label class="field-label">Trace mode</label>
@@ -153,7 +179,7 @@
           <input type="number" id="offset_y_mm" name="offset_y_mm" value="0" step="0.5" min="{{ offset_mm_min }}" max="{{ offset_mm_max }}">
         </div>
       </div>
-      <p class="placement-hint">100% auto-fits the design to the plate, centered. Offsets shift it from center; the result page will warn if it no longer fits.</p>
+      <p class="placement-hint">100% auto-fits the design to the selected plate, centered. Offsets shift it from center; the result page will warn if it no longer fits.</p>
     </fieldset>
 
     <fieldset>
@@ -161,7 +187,7 @@
       <div class="placement-field">
         <input type="number" id="print_height_mm" name="print_height_mm" value="{{ default_print_height_mm }}" step="0.05" min="{{ print_height_mm_min }}" max="{{ print_height_mm_max }}">
       </div>
-      <p class="placement-hint">Defaults to the agar surface height for a {{ agar_volume_ml }}mL pour on the {{ plate_side_mm }}mm {{ plate_shape }} plate (volume &divide; plate floor area), plus 0.1mm clearance. Adjust if you poured a different volume.</p>
+      <p class="placement-hint">Defaults to the agar surface height for the selected plate&rsquo;s standard pour (volume &divide; plate floor area), plus 0.1mm clearance. Adjust if you poured a different volume.</p>
     </fieldset>
 
     <fieldset>
@@ -175,7 +201,34 @@
     <button type="submit">Generate G-code</button>
   </form>
 
-  <footer>Dark pixels are treated as foreground. Design is scaled to fit the printable plate area, and paths are clipped to a {{ print_area_radius_mm }}mm-radius circle centred on the plate.</footer>
+  <footer>Dark pixels are treated as foreground. Design is scaled to fit the selected plate, and paths are clipped to a circle centred on it.</footer>
 </main>
+<script>
+  // Keep the plate hint and the default print height in step with the selected preset.
+  // Print height is the agar surface height, which depends on the plate's floor area, so
+  // switching preset has to move it -- otherwise the needle height silently belongs to the
+  // previous plate. Only overwrite it while it still matches a preset default, so a height
+  // the user typed themselves is never clobbered.
+  var PLATE_DEFAULT_HEIGHTS = [
+    {% for p in plates %}{{ p.default_print_height_mm }}{% if not loop.last %}, {% endif %}{% endfor %}
+  ];
+  function syncPlate(sel) {
+    var o = sel.options[sel.selectedIndex];
+    var r = o.dataset.radius, span = o.dataset.span, vol = o.dataset.volume, shape = o.dataset.shape;
+    var hint = document.getElementById('plate_hint');
+    if (hint) {
+      hint.textContent = 'Designs are clipped to a ' + r + 'mm-radius circle (' + span +
+        'mm across) centred on the plate. Default assumes a ' + vol + 'mL pour' +
+        (shape === 'square' ? '; the circular clip cannot reach the square corners.' : '.');
+    }
+    var h = document.getElementById('print_height_mm');
+    if (h) {
+      var cur = parseFloat(h.value);
+      var isDefault = PLATE_DEFAULT_HEIGHTS.some(function (d) { return Math.abs(cur - parseFloat(d)) < 0.005; });
+      if (isDefault || isNaN(cur)) { h.value = o.dataset.printHeight; }
+    }
+  }
+  syncPlate(document.getElementById('plate_key'));
+</script>
 </body>
 </html>

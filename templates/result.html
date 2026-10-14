@@ -31,7 +31,23 @@
     border-radius: 10px;
     margin: 1.25rem 0;
     background: white;
+    overflow: hidden;
+    line-height: 0;
   }
+  .preview svg { width: 100%; height: auto; display: block; }
+  .inline-form { display: inline; }
+  select {
+    display: block;
+    width: 100%;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fcfcfa;
+    font-size: 0.95rem;
+    font-family: inherit;
+    margin-bottom: 0.75rem;
+  }
+
   .warning {
     background: var(--warn-bg);
     color: var(--warn);
@@ -123,6 +139,21 @@
 </style>
 </head>
 <body>
+{#
+  Every request is self-contained: there is no server-side session, so the design and the
+  full placement state ride along as hidden fields on each form. Without these the download
+  and regenerate posts would have nothing to rebuild the result from.
+#}
+{% macro state_fields() -%}
+  <input type="hidden" name="trace_mode" value="{{ trace_mode }}">
+  <input type="hidden" name="design_b64" value="{{ design_b64 }}">
+  <input type="hidden" name="plate_key" value="{{ selected_plate_key }}">
+  <input type="hidden" name="scale_pct" value="{{ scale_pct }}">
+  <input type="hidden" name="offset_x_mm" value="{{ offset_x_mm }}">
+  <input type="hidden" name="offset_y_mm" value="{{ offset_y_mm }}">
+  <input type="hidden" name="print_height_mm" value="{{ print_height_mm }}">
+  <input type="hidden" name="extrusion_per_mm" value="{{ extrusion_per_mm }}">
+{%- endmacro %}
 <main>
   <a class="back" href="/">&larr; Start over</a>
   <h1>Result <span class="mode-pill">{{ trace_mode }}</span></h1>
@@ -131,9 +162,10 @@
     <div class="warning">{{ w }}</div>
   {% endfor %}
 
-  <img class="preview" src="data:image/png;base64,{{ preview_b64 }}" alt="Trace preview">
+  <div class="preview">{{ preview_svg|safe }}</div>
 
   <table class="stats">
+    <tr><td>Plate</td><td>{{ plate.label }} &mdash; {{ plate.print_area_radius_mm }}mm print radius</td></tr>
     <tr><td>Paths generated</td><td>{{ n_paths }}</td></tr>
     <tr><td>Foreground (dark pixel) fraction</td><td>{{ fg_fraction }}%</td></tr>
     <tr><td>Total traced line length</td><td>{{ total_len_mm }} mm</td></tr>
@@ -146,14 +178,26 @@
   </table>
 
   <div class="actions">
-    <a class="button" href="/download/{{ session_id }}/gcode">Download G-code</a>
+    <form action="/download" method="post" class="inline-form">
+      {{ state_fields() }}
+      <button type="submit">Download G-code</button>
+    </form>
     <a class="button secondary" href="/">Try a different mode</a>
   </div>
 
   <details class="adjust">
     <summary>Adjust scale &amp; position</summary>
-    <form action="/regenerate/{{ session_id }}" method="post">
+    <form action="/regenerate" method="post">
       <input type="hidden" name="trace_mode" value="{{ trace_mode }}">
+      <input type="hidden" name="design_b64" value="{{ design_b64 }}">
+      <div class="placement-field">
+        <label for="plate_key">Plate</label>
+        <select id="plate_key" name="plate_key">
+          {% for p in plates %}
+          <option value="{{ p.key }}" {% if p.key == selected_plate_key %}selected{% endif %}>{{ p.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
       <div class="placement-field">
         <label for="scale_pct"><span>Scale</span><span id="scale_pct_val">{{ scale_pct|round(0)|int }}%</span></label>
         <input type="range" id="scale_pct" name="scale_pct" min="{{ scale_pct_min }}" max="{{ scale_pct_max }}" step="1" value="{{ scale_pct|round(0)|int }}"

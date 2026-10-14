@@ -2,4 +2,3 @@ flask
 numpy
 Pillow
 scikit-image
-matplotlib

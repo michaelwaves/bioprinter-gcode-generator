@@ -134,6 +134,7 @@ def _form_bounds():
         extrusion_per_mm_min=f"{EXTRUSION_PER_MM_MIN:g}",
         extrusion_per_mm_max=f"{EXTRUSION_PER_MM_MAX:g}",
         max_upload_mb=f"{MAX_UPLOAD_BYTES / (1024 * 1024):g}",
+        working_resolution_cap=ltg.MAX_TRACE_SIDE_PX,
         plates=[ltg.Plate.from_key(k).as_template_dict() for k, _ in ltg.plate_choices()],
     )
 
@@ -166,7 +167,7 @@ def _run(img, trace_mode, plate, form):
 
 
 @app.errorhandler(413)
-def too_large(_exc):
+def too_large(_exc):  # noqa: ARG001 -- Flask passes the exception; the message is fixed
     return _render_index(error=f"That image is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)}MB. "
                                 "Resize or re-save it smaller and try again."), 413
 

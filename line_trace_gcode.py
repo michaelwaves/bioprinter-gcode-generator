@@ -173,6 +173,10 @@ class Plate:
             max_area_mm=f"{self.max_area_mm:g}",
             agar_volume_ml=f"{self.agar_volume_ml:g}",
             agar_depth_mm=f"{self.agar_surface_height_mm():.2f}",
+            # The needle height: agar depth PLUS the clearance. Kept distinct from
+            # agar_depth_mm because the depth alone would park the needle exactly on the
+            # agar surface rather than just above it.
+            default_print_height_mm=f"{self.default_print_height_mm():.2f}",
             center_x=f"{self.center_x:g}", center_y=f"{self.center_y:g}",
         )
 # clearance kept between the print-height Z and the travel-height Z, preserved from the original

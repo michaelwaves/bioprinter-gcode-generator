@@ -1,9 +1,9 @@
 # Agar Line-Trace Generator — Web UI
 
-A local Flask front end for `line_trace_gcode.py`. Upload an image, pick a
-trace mode, get back a preview and a downloadable `.gcode` file sized to your
-plate. No processing logic was reimplemented for the web version — it calls
-the same tested `process_image()` function the CLI script uses.
+A Flask front end for `line_trace_gcode.py`. Upload an image, pick a plate and a
+trace mode, get back a preview and a downloadable `.gcode` file sized to that plate.
+No processing logic was reimplemented for the web version — it calls the same tested
+`process_image()` function the CLI script uses.
 
 ## Setup
 
@@ -12,7 +12,7 @@ pip install -r requirements.txt --break-system-packages
 ```
 (drop `--break-system-packages` if you're using a virtualenv, which is fine too)
 
-## Run
+## Run locally
 
 ```
 python3 app.py
@@ -20,21 +20,99 @@ python3 app.py
 
 Then open http://127.0.0.1:5000 in a browser. Stop it with Ctrl+C.
 
+Flask's auto-reloader is off (`debug=False`), so **code and template edits need a
+restart** to take effect. Set `debug=True` in `app.py` if you want hot reload.
+
+## Plate presets
+
+Plates are defined in one place: the `PLATE_PRESETS` dict at the top of
+`line_trace_gcode.py`. The web UI builds its dropdown from it and the CLI takes
+`--plate <key>`, so adding a plate needs no other edits:
+
+```python
+PLATE_PRESETS = {
+    "my_plate": {
+        "label": "120mm square plate",   # shown in the dropdown
+        "shape": "square",               # "square" or "round"
+        "size_mm": 120.0,                # FLAT INNER floor, not outer rim-to-rim
+        "edge_margin_mm": 3.0,           # ~2mm bead spread + ~1mm buffer
+        "agar_volume_ml": 45.0,          # default pour for this plate
+        "center_xy": (100.0, 100.0),     # bed coords the plate centre sits at
+    },
+}
+```
+
+Shipped presets: `petri_85`, `petri_100`, `square_150`. `DEFAULT_PLATE_KEY` sets
+which one is preselected.
+
+Three things to get right when adding one:
+
+- **`size_mm` is the flat floor, not the nominal size.** Plates with a sloped rim have
+  a usable flat base noticeably smaller than their advertised dimension. Measure it.
+- **`center_xy` must match where the plate physically sits on the bed.** Everything is
+  placed relative to it, and the print-area clip is centred on it — so if it's wrong,
+  the clip protects the wrong region.
+- **`agar_volume_ml` doesn't carry over between plates.** Floor area grows with the
+  *square* of plate size, so a volume that gave a good depth on a small dish is a very
+  thin layer on a big plate. 20mL is 3.52mm deep in an 85mm dish and 0.89mm on a 150mm
+  square. The default needle height is derived from this, so a wrong volume means a
+  wrong Z.
+
+### Square plates lose their corners
+
+The path clip (`clip_paths_to_dish`) is always a **circle**, so on a square plate the
+usable region is the circle *inscribed* in the square — about 21% of the floor, in the
+four corners, is unreachable. Making the radius large enough to reach the corners would
+push it `(side/2)·√2` out: on a 150mm plate that's 106mm, which bulges 31mm past the
+plate edge at each edge midpoint, where the needle would extrude onto the bed. Reaching
+the corners needs a rectangular clip, not a bigger radius. The preview draws the plate
+outline and the clip circle so the unreachable area is visible.
+
 ## Trace modes
 
 - **both** (hybrid) — outline + skeleton, good general default
 - **edge** — traces outlines/borders only
 - **skeletonize** — traces centerlines only, best for thin line art
 
+## Deploying to Vercel
+
+```
+npx vercel          # preview deploy
+npx vercel --prod   # production
+```
+
+`vercel.json` rewrites all paths to `api/index.py`, which exposes the Flask `app`.
+
+The app holds **no server-side state** — this is what makes it work on serverless.
+Each request carries the working-resolution design as a base64 hidden form field
+(~8KB), so `/regenerate` and `/download` never need a stored session or a temp file;
+earlier versions kept a `SESSIONS` dict plus a temp dir, which breaks as soon as
+requests land on different instances. `/download` re-runs the deterministic pipeline
+rather than storing the generated file.
+
+### Constraints on the free (Hobby) plan
+
+- **Bundle size: ~207MB against a 250MB limit.** scipy and networkx, pulled in by
+  scikit-image, are ~117MB of that. matplotlib was removed to make room — it was ~45MB
+  and was used only to draw the preview, which is now inline SVG. **Don't add
+  matplotlib back**, and check the bundle before adding any large dependency. If it ever
+  goes over, the next cut is replacing `skeletonize` / `find_contours` / `label` with
+  numpy implementations to drop scikit-image, scipy and networkx (~145MB) — but that
+  changes generated paths, so it needs re-verification against physical prints.
+- **Upload cap 4MB** (`MAX_UPLOAD_BYTES`), under Vercel's 4.5MB request body limit.
+  Tracing downsamples to `MAX_TRACE_SIDE_PX` (300px) anyway, so this costs nothing real.
+- **`maxDuration` is 60s** with 1GB memory in `vercel.json`. Cold starts pay a few
+  seconds to import numpy/scipy/scikit-image.
+- Vercel's Python runtime is 3.12; the pinned deps all ship 3.12 wheels.
+
 ## Notes
 
-- Plate geometry (`DISH_CENTER_X/Y`, `MAX_AREA_MM`), print heights, and
-  extrusion rate all live in `line_trace_gcode.py` as module-level constants
-  — same place as in the CLI version. Edit there if your dish or Allstruder
-  calibration changes.
-- Each upload gets its own temp working directory (`/tmp/agar_<id>_...`) so
-  concurrent uploads don't collide. Nothing is cleaned up automatically —
-  if you're running this for a while, periodically clear old `agar_*` temp
-  dirs, or restart the app.
-- This is a local single-user tool (`app.run(debug=True)`) — not set up for
-  exposing to a network or multiple simultaneous users.
+- Print heights and extrusion rate live in `line_trace_gcode.py`; form clamp ranges
+  (`SCALE_PCT_MIN/MAX`, `OFFSET_MM_LIMIT`, …) live in `app.py`. The templates read their
+  input `min`/`max` from those constants via `_form_bounds()`, so widening a clamp takes
+  effect without editing HTML. Hardcoding them in both places silently breaks: the
+  browser rejects out-of-range values before they're ever submitted.
+- `print_height_mm` is the agar surface height **plus** `PRINT_HEIGHT_CLEARANCE_MM`
+  (0.1mm), so the needle sits just above the agar rather than in it.
+- Not hardened for untrusted users. There's no auth, and every request runs image
+  processing, so a public deployment is trivially easy to run up against rate limits.
