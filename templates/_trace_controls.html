@@ -1,0 +1,34 @@
+<div id="photo_controls">
+  <div class="placement-field">
+    <label for="photo_detail"><span>Photo detail</span><span id="photo_detail_val">{{ photo_detail }}</span></label>
+    <input type="range" id="photo_detail" name="photo_detail" min="{{ photo_detail_min }}"
+           max="{{ photo_detail_max }}" step="1" value="{{ photo_detail }}" aria-describedby="photo_detail_hint"
+           oninput="document.getElementById('photo_detail_val').textContent = this.value">
+  </div>
+  <p class="placement-hint" id="photo_detail_hint">For Photo outlines: lower keeps strong outlines; higher adds faint edges and texture. Default: 50.</p>
+  <div class="placement-field">
+    <label for="photo_smoothing"><span>Photo smoothing</span><span id="photo_smoothing_val">{{ photo_smoothing }} px</span></label>
+    <input type="range" id="photo_smoothing" name="photo_smoothing" min="{{ photo_smoothing_min }}"
+           max="{{ photo_smoothing_max }}" step="0.1" value="{{ photo_smoothing }}" aria-describedby="photo_smoothing_hint"
+           oninput="document.getElementById('photo_smoothing_val').textContent = this.value + ' px'">
+  </div>
+  <p class="placement-hint" id="photo_smoothing_hint">For Photo outlines: higher suppresses texture but softens small features. Default: 1 px.</p>
+</div>
+<div id="dark_controls">
+  {% include '_threshold_control.html' %}
+</div>
+<p class="placement-hint">Automatic chooses Photo outlines for images with many gray tones, and Hybrid for mostly black-and-white artwork.
+  Use Generate or Regenerate to apply changes.</p>
+<script>
+  function syncTraceControls() {
+    var selected = document.querySelector('input[type="radio"][name="trace_mode"]:checked') ||
+      document.querySelector('select[name="trace_mode"]');
+    var mode = selected ? selected.value : 'auto';
+    document.getElementById('photo_controls').hidden = mode !== 'auto' && mode !== 'photo';
+    document.getElementById('dark_controls').hidden = mode === 'photo';
+  }
+  document.querySelectorAll('input[type="radio"][name="trace_mode"], select[name="trace_mode"]').forEach(function (control) {
+    control.addEventListener('change', syncTraceControls);
+  });
+  syncTraceControls();
+</script>

@@ -40,7 +40,7 @@ except ImportError:
 else:
     _lazy_stub_fix.install()
 
-from skimage import measure, morphology
+from skimage import measure, morphology, feature
 
 # ---- parameters ----
 START_Z = 5.000
@@ -52,6 +52,11 @@ RETRACT_E = 0.02
 
 DARK_THRESHOLD = 128
 DARK_THRESHOLD_MIN, DARK_THRESHOLD_MAX = 0, 255
+DEFAULT_TRACE_MODE = "auto"
+PHOTO_DETAIL = 50
+PHOTO_DETAIL_MIN, PHOTO_DETAIL_MAX = 0, 100
+PHOTO_SMOOTHING = 1.0
+PHOTO_SMOOTHING_MIN, PHOTO_SMOOTHING_MAX = 0.5, 3.0
 MIN_CONTOUR_LEN_PX = 15
 
 # ---- plate presets ----
@@ -243,8 +248,25 @@ def find_images(folder):
     return sorted(set(files))
 
 
-def prepare_image_for_print(path_or_image, out_path=None, trace_mode="both", max_side_px=MAX_TRACE_SIDE_PX,
-                            dark_threshold=DARK_THRESHOLD):
+def grayscale_image(path_or_image):
+    """Read an image and flatten transparency onto white before grayscale conversion."""
+    img = path_or_image if isinstance(path_or_image, Image.Image) else Image.open(path_or_image)
+    img = img.convert("RGBA")
+    return Image.alpha_composite(Image.new("RGBA", img.size, "white"), img).convert("L")
+
+
+def resolve_trace_mode(path_or_image, trace_mode):
+    """Photos have many midtones; mostly black/white artwork keeps the hybrid tracer."""
+    if trace_mode != "auto":
+        return trace_mode
+    gray = np.asarray(grayscale_image(path_or_image))
+    midtone_fraction = np.mean((gray > 10) & (gray < 245))
+    return "photo" if midtone_fraction > 0.2 and len(np.unique(gray)) >= 32 else "both"
+
+
+def prepare_image_for_print(path_or_image, out_path=None, trace_mode=DEFAULT_TRACE_MODE,
+                            max_side_px=MAX_TRACE_SIDE_PX, dark_threshold=DARK_THRESHOLD,
+                            photo_detail=PHOTO_DETAIL, photo_smoothing=PHOTO_SMOOTHING):
     """
     Load the source image once, threshold it into a foreground mask according to
     trace_mode, and downsample that mask (if needed) -- all in a single pass.
@@ -261,23 +283,28 @@ def prepare_image_for_print(path_or_image, out_path=None, trace_mode="both", max
     Returns (preview_image, mask, h, w) where mask/h/w are already at the final
     working resolution used for path extraction AND mm scaling.
     """
-    # Load and flatten transparency onto white BEFORE grayscale conversion.
-    # img.convert("L") alone ignores alpha entirely: for a palette/RGBA image
-    # with a transparent background, it reads whatever RGB value happens to
-    # sit underneath the transparent pixels, which is not necessarily white.
-    # On the real yin-yang PNG this pulled in leftover watermark color data
-    # and inverted parts of the read. Compositing onto a white background
-    # first makes "transparent" mean "background" like it visually should.
-    # Verified this is a no-op (byte-identical output) on plain RGB, grayscale,
-    # and fully-opaque RGBA images -- it only changes anything for pixels that
-    # are actually partially/fully transparent.
-    # Accepts a path or an already-loaded PIL Image so an upload can be processed from
-    # memory, without needing a writable filesystem to stage it on.
-    img = (path_or_image if isinstance(path_or_image, Image.Image)
-           else Image.open(path_or_image))
-    img = img.convert("RGBA")
-    white_bg = Image.fromarray(np.full((*img.size[::-1], 4), 255, dtype=np.uint8), mode="RGBA")
-    img = Image.alpha_composite(white_bg, img).convert("L")
+    img = grayscale_image(path_or_image)
+    trace_mode = resolve_trace_mode(img, trace_mode)
+    if trace_mode == "photo":
+        if not PHOTO_DETAIL_MIN <= photo_detail <= PHOTO_DETAIL_MAX:
+            raise ValueError("Photo detail must be from 0 to 100.")
+        if not PHOTO_SMOOTHING_MIN <= photo_smoothing <= PHOTO_SMOOTHING_MAX:
+            raise ValueError("Photo smoothing must be from 0.5 to 3 pixels.")
+        # Resize grayscale before gradients: max-pooling a thresholded photograph
+        # promotes texture/noise instead of preserving the actual object edges.
+        if max_side_px is not None and max(img.size) > max_side_px:
+            ratio = max_side_px / max(img.size)
+            img = img.resize((max(1, round(img.width * ratio)), max(1, round(img.height * ratio))),
+                             Image.Resampling.LANCZOS)
+        high_threshold = 0.55 - 0.005 * photo_detail
+        mask = feature.canny(np.asarray(img, dtype=float) / 255.0, sigma=photo_smoothing,
+                             low_threshold=high_threshold * 0.4, high_threshold=high_threshold)
+        mask = morphology.remove_small_objects(mask, max_size=10, connectivity=2)
+        h, w = mask.shape
+        bw = Image.fromarray(np.where(mask, 0, 255).astype(np.uint8))
+        if out_path is not None:
+            bw.save(out_path)
+        return bw, mask, h, w
     arr = np.array(img)
     if not DARK_THRESHOLD_MIN <= dark_threshold <= DARK_THRESHOLD_MAX or int(dark_threshold) != dark_threshold:
         raise ValueError("Dark-pixel threshold must be an integer from 0 to 255.")
@@ -521,7 +548,7 @@ def hybrid_paths_from_mask(mask, h, w, trace_mode="both"):
     if mask.sum() == 0:
         return paths
 
-    if trace_mode == "skeletonize":
+    if trace_mode in ("skeletonize", "photo"):
         skel_paths, _ = extract_skeleton_paths(mask)
         for p in skel_paths:
             if p.shape[0] >= MIN_SKELETON_LEN_PX:
@@ -973,9 +1000,10 @@ def build_preview_svg(contours_mm, plate, extrusion_per_mm, width_px=620):
     return "".join(out)
 
 
-def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm=0.0, offset_y_mm=0.0,
+def process_image(path_or_image, trace_mode=DEFAULT_TRACE_MODE, scale_pct=100.0, offset_x_mm=0.0, offset_y_mm=0.0,
                    print_height_mm=None, extrusion_per_mm=None, plate=None, plate_key=None,
-                   out_dir=None, write_files=True, name=None, dark_threshold=DARK_THRESHOLD):
+                   out_dir=None, write_files=True, name=None, dark_threshold=DARK_THRESHOLD,
+                   photo_detail=PHOTO_DETAIL, photo_smoothing=PHOTO_SMOOTHING):
     """
     Run the whole pipeline for one image and return a result dict.
 
@@ -1003,8 +1031,10 @@ def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm
     print(f"\n--- {name} ({plate.label}) ---")
 
     prepared_path = os.path.join(out_dir, f"{name}_prepared.png") if write_files else None
-    _, mask, h, w = prepare_image_for_print(path_or_image, prepared_path, trace_mode=trace_mode,
-                                          dark_threshold=dark_threshold)
+    resolved_trace_mode = resolve_trace_mode(path_or_image, trace_mode)
+    _, mask, h, w = prepare_image_for_print(path_or_image, prepared_path, trace_mode=resolved_trace_mode,
+                                          dark_threshold=dark_threshold, photo_detail=photo_detail,
+                                          photo_smoothing=photo_smoothing)
     print(f"prepared image: {w}x{h}px working resolution")
 
     fg_fraction = mask.sum() / mask.size
@@ -1012,7 +1042,7 @@ def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm
     if fg_fraction > 0.9:
         print("WARNING: >90% counted as foreground -- background may also be dark. Check output before printing.")
 
-    pixel_paths = hybrid_paths_from_mask(mask, h, w, trace_mode=trace_mode)
+    pixel_paths = hybrid_paths_from_mask(mask, h, w, trace_mode=resolved_trace_mode)
     print(f"{len(pixel_paths)} raw path(s) from hybrid generator")
 
     area_w_mm, area_h_mm, origin_x, origin_y = pixel_center_and_scale(
@@ -1085,6 +1115,9 @@ def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm
         "print_height_mm": print_height_mm,
         "extrusion_per_mm": extrusion_per_mm,
         "dark_threshold": dark_threshold,
+        "photo_detail": photo_detail,
+        "photo_smoothing": photo_smoothing,
+        "resolved_trace_mode": resolved_trace_mode,
         "was_clipped": was_clipped,
         "clipped_len_mm": clipped_len_mm,
         "plate": plate,
@@ -1095,9 +1128,12 @@ def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate line-trace G-code from an image")
     parser.add_argument("images", nargs="*", help="Image files to process")
-    parser.add_argument("--trace-mode", choices=["skeletonize", "edge", "both"], default="both")
+    parser.add_argument("--trace-mode", choices=["auto", "photo", "skeletonize", "edge", "both"],
+                        default=DEFAULT_TRACE_MODE)
     parser.add_argument("--dark-threshold", type=int, default=DARK_THRESHOLD, metavar="0-255",
                         help="include pixels darker than this value (default: %(default)s)")
+    parser.add_argument("--photo-detail", type=float, default=PHOTO_DETAIL, metavar="0-100")
+    parser.add_argument("--photo-smoothing", type=float, default=PHOTO_SMOOTHING, metavar="0.5-3")
     parser.add_argument("--plate", choices=sorted(PLATE_PRESETS), default=DEFAULT_PLATE_KEY,
                         help="plate preset to print on (default: %(default)s)")
     args = parser.parse_args()
@@ -1130,4 +1166,5 @@ if __name__ == "__main__":
         print(f"found {len(images)} image(s)")
         for img_path in images:
             process_image(img_path, trace_mode=args.trace_mode, plate_key=args.plate,
-                           dark_threshold=args.dark_threshold)
+                           dark_threshold=args.dark_threshold, photo_detail=args.photo_detail,
+                           photo_smoothing=args.photo_smoothing)

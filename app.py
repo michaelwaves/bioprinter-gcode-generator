@@ -30,9 +30,15 @@ app = Flask(__name__)
 
 ALLOWED_EXTS = {".png", ".jpg", ".jpeg"}
 TRACE_MODES = {
-    "both": "Hybrid (outline + skeleton) -- best general-purpose default",
+    "auto": "Automatically use photo outlines for photographs and hybrid tracing for line art",
+    "photo": "Photo outlines -- follows changes in brightness and suppresses fine texture",
+    "both": "Hybrid -- outline + skeleton for black-and-white artwork",
     "edge": "Edge only -- traces outlines/borders of shapes",
     "skeletonize": "Skeleton only -- traces centerlines, good for thin line art",
+}
+TRACE_MODE_LABELS = {
+    "auto": "Automatic", "photo": "Photo outlines", "both": "Hybrid",
+    "edge": "Dark-region outlines", "skeletonize": "Centerlines",
 }
 
 SCALE_PCT_MIN, SCALE_PCT_MAX = 10.0, 500.0
@@ -137,6 +143,10 @@ def _form_bounds():
         working_resolution_cap=ltg.MAX_TRACE_SIDE_PX,
         dark_threshold_min=ltg.DARK_THRESHOLD_MIN,
         dark_threshold_max=ltg.DARK_THRESHOLD_MAX,
+        photo_detail_min=ltg.PHOTO_DETAIL_MIN,
+        photo_detail_max=ltg.PHOTO_DETAIL_MAX,
+        photo_smoothing_min=ltg.PHOTO_SMOOTHING_MIN,
+        photo_smoothing_max=ltg.PHOTO_SMOOTHING_MAX,
         plates=[ltg.Plate.from_key(k).as_template_dict() for k, _ in ltg.plate_choices()],
     )
 
@@ -149,12 +159,15 @@ def _index_defaults(plate=None):
         default_print_height_mm=f"{plate.default_print_height_mm():.2f}",
         default_extrusion_per_mm=f"{ltg.DEFAULT_EXTRUSION_PER_MM:.4f}",
         dark_threshold=ltg.DARK_THRESHOLD,
+        photo_detail=ltg.PHOTO_DETAIL,
+        photo_smoothing=ltg.PHOTO_SMOOTHING,
+        default_trace_mode=ltg.DEFAULT_TRACE_MODE,
         **_form_bounds(),
     )
 
 
 def _render_index(error=None, plate=None):
-    return render_template("index.html", trace_modes=TRACE_MODES,
+    return render_template("index.html", trace_modes=TRACE_MODES, trace_mode_labels=TRACE_MODE_LABELS,
                             error=error, **_index_defaults(plate))
 
 
@@ -163,11 +176,16 @@ def _run(img, trace_mode, plate, form):
         _parse_placement_fields(form, plate)
     dark_threshold = int(_clamped_float(form, "dark_threshold", ltg.DARK_THRESHOLD,
                                         ltg.DARK_THRESHOLD_MIN, ltg.DARK_THRESHOLD_MAX))
+    photo_detail = _clamped_float(form, "photo_detail", ltg.PHOTO_DETAIL,
+                                  ltg.PHOTO_DETAIL_MIN, ltg.PHOTO_DETAIL_MAX)
+    photo_smoothing = _clamped_float(form, "photo_smoothing", ltg.PHOTO_SMOOTHING,
+                                     ltg.PHOTO_SMOOTHING_MIN, ltg.PHOTO_SMOOTHING_MAX)
     return ltg.process_image(
         img, trace_mode=trace_mode, plate=plate,
         scale_pct=scale_pct, offset_x_mm=offset_x_mm, offset_y_mm=offset_y_mm,
         print_height_mm=print_height_mm, extrusion_per_mm=extrusion_per_mm,
         dark_threshold=dark_threshold,
+        photo_detail=photo_detail, photo_smoothing=photo_smoothing,
         write_files=False,
     )
 
@@ -186,7 +204,7 @@ def index():
 @app.route("/generate", methods=["POST"])
 def generate():
     f = request.files.get("image")
-    trace_mode = request.form.get("trace_mode", "both")
+    trace_mode = request.form.get("trace_mode", ltg.DEFAULT_TRACE_MODE)
     plate = _selected_plate(request.form)
 
     if trace_mode not in TRACE_MODES:
@@ -215,7 +233,7 @@ def generate():
 
 @app.route("/regenerate", methods=["POST"])
 def regenerate():
-    trace_mode = request.form.get("trace_mode", "both")
+    trace_mode = request.form.get("trace_mode", ltg.DEFAULT_TRACE_MODE)
     plate = _selected_plate(request.form)
     if trace_mode not in TRACE_MODES:
         abort(400, "Unknown trace mode.")
@@ -241,7 +259,7 @@ def download_gcode():
     here returns byte-identical G-code to what the preview was built from. That avoids
     needing anywhere to store the generated file between the two requests.
     """
-    trace_mode = request.form.get("trace_mode", "both")
+    trace_mode = request.form.get("trace_mode", ltg.DEFAULT_TRACE_MODE)
     plate = _selected_plate(request.form)
     if trace_mode not in TRACE_MODES:
         abort(400, "Unknown trace mode.")
@@ -296,6 +314,10 @@ def _result_template_args(result):
         print_height_mm=f"{result['print_height_mm']:.2f}",
         extrusion_per_mm=f"{result['extrusion_per_mm']:.4f}",
         dark_threshold=result["dark_threshold"],
+        photo_detail=f"{result['photo_detail']:g}",
+        photo_smoothing=f"{result['photo_smoothing']:g}",
+        resolved_trace_mode_label=TRACE_MODE_LABELS[result["resolved_trace_mode"]],
+        trace_mode_labels=TRACE_MODE_LABELS,
         warnings=warnings,
         **_form_bounds(),
     )

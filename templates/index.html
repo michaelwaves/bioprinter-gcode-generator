@@ -156,15 +156,15 @@
       <label class="field-label">Trace mode</label>
       {% for mode, desc in trace_modes.items() %}
       <label class="mode-option">
-        <input type="radio" name="trace_mode" value="{{ mode }}" {% if mode == "both" %}checked{% endif %}>
-        <span class="mode-title">{{ mode }}</span>
+        <input type="radio" name="trace_mode" value="{{ mode }}" {% if mode == default_trace_mode %}checked{% endif %}>
+        <span class="mode-title">{{ trace_mode_labels[mode] }}</span>
         <span class="mode-desc">{{ desc }}</span>
       </label>
       {% endfor %}
     </fieldset>
 
     <fieldset>
-      {% include '_threshold_control.html' %}
+      {% include '_trace_controls.html' %}
     </fieldset>
 
     <fieldset>
@@ -190,7 +190,7 @@
     <fieldset>
       <label class="field-label" for="print_height_mm">Print height (mm)</label>
       <div class="placement-field">
-        <input type="number" id="print_height_mm" name="print_height_mm" value="{{ default_print_height_mm }}" step="0.05" min="{{ print_height_mm_min }}" max="{{ print_height_mm_max }}">
+        <input type="number" id="print_height_mm" name="print_height_mm" value="{{ default_print_height_mm }}" step="0.01" min="{{ print_height_mm_min }}" max="{{ print_height_mm_max }}">
       </div>
       <p class="placement-hint">Square plates default to 3.2mm. Petri dish defaults use agar depth plus 0.1mm clearance. Adjust for your agar depth and needle clearance.</p>
     </fieldset>

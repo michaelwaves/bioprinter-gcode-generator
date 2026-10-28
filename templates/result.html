@@ -148,6 +148,8 @@
 {% macro state_fields() -%}
   <input type="hidden" name="trace_mode" value="{{ trace_mode }}">
   <input type="hidden" name="dark_threshold" value="{{ dark_threshold }}">
+  <input type="hidden" name="photo_detail" value="{{ photo_detail }}">
+  <input type="hidden" name="photo_smoothing" value="{{ photo_smoothing }}">
   <input type="hidden" name="design_b64" value="{{ design_b64 }}">
   <input type="hidden" name="plate_key" value="{{ selected_plate_key }}">
   <input type="hidden" name="scale_pct" value="{{ scale_pct }}">
@@ -158,7 +160,7 @@
 {%- endmacro %}
 <main>
   <a class="back" href="/">&larr; Start over</a>
-  <h1>Result <span class="mode-pill">{{ trace_mode }}</span></h1>
+  <h1>Result <span class="mode-pill">{{ resolved_trace_mode_label }}{% if trace_mode == 'auto' %} (automatic){% endif %}</span></h1>
 
   {% for w in warnings %}
     <div class="warning">{{ w }}</div>
@@ -169,8 +171,12 @@
   <table class="stats">
     <tr><td>Plate</td><td>{{ plate.label }} &mdash; {{ plate.print_area_description }}</td></tr>
     <tr><td>Paths generated</td><td>{{ n_paths }}</td></tr>
-    <tr><td>Foreground (dark pixel) fraction</td><td>{{ fg_fraction }}%</td></tr>
+    <tr><td>Pixels selected for tracing</td><td>{{ fg_fraction }}%</td></tr>
+    {% if resolved_trace_mode_label == 'Photo outlines' %}
+    <tr><td>Photo detail / smoothing</td><td>{{ photo_detail }} / {{ photo_smoothing }} px</td></tr>
+    {% else %}
     <tr><td>Dark-pixel threshold</td><td>{{ dark_threshold }}</td></tr>
+    {% endif %}
     <tr><td>Total traced line length</td><td>{{ total_len_mm }} mm</td></tr>
     <tr><td>Estimated total extrusion</td><td>{{ est_extrusion_mm }} mm</td></tr>
     <tr><td>Design footprint on plate</td><td>{{ area_w_mm }} x {{ area_h_mm }} mm</td></tr>
@@ -191,9 +197,16 @@
   <details class="adjust">
     <summary>Adjust detail, scale &amp; position</summary>
     <form action="/regenerate" method="post">
-      <input type="hidden" name="trace_mode" value="{{ trace_mode }}">
       <input type="hidden" name="design_b64" value="{{ design_b64 }}">
-      {% include '_threshold_control.html' %}
+      <div class="placement-field">
+        <label for="trace_mode">Trace mode</label>
+        <select id="trace_mode" name="trace_mode">
+          {% for mode, desc in trace_modes.items() %}
+          <option value="{{ mode }}" {% if mode == trace_mode %}selected{% endif %}>{{ trace_mode_labels[mode] }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% include '_trace_controls.html' %}
       <div class="placement-field">
         <label for="plate_key">Plate</label>
         <select id="plate_key" name="plate_key">
@@ -218,7 +231,7 @@
         </div>
         <div class="placement-field">
           <label for="print_height_mm">Print height (mm)</label>
-          <input type="number" id="print_height_mm" name="print_height_mm" value="{{ print_height_mm }}" step="0.05" min="{{ print_height_mm_min }}" max="{{ print_height_mm_max }}">
+          <input type="number" id="print_height_mm" name="print_height_mm" value="{{ print_height_mm }}" step="0.01" min="{{ print_height_mm_min }}" max="{{ print_height_mm_max }}">
         </div>
         <div class="placement-field">
           <label for="extrusion_per_mm">Extrusion per mm</label>

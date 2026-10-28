@@ -12,6 +12,58 @@ from test_print_area import DownloadFields
 
 
 class TraceSettingsTests(unittest.TestCase):
+    def test_automatic_distinguishes_photographs_from_line_art(self):
+        photo = Image.fromarray(np.tile(np.linspace(30, 220, 100).astype(np.uint8), (100, 1)))
+        self.assertEqual(ltg.resolve_trace_mode(photo, "auto"), "photo")
+        artwork = Image.new("L", (100, 100), 255)
+        ImageDraw.Draw(artwork).rectangle((20, 20, 80, 80), outline=0, width=2)
+        self.assertEqual(ltg.resolve_trace_mode(artwork, "auto"), "both")
+        transparent = Image.new("RGBA", (100, 100), (100, 100, 100, 0))
+        self.assertEqual(ltg.resolve_trace_mode(transparent, "auto"), "both")
+        self.assertEqual(ltg.resolve_trace_mode(photo, "edge"), "edge")
+
+    def test_photo_detail_recovers_faint_edges_and_smoothing_changes_paths(self):
+        image = Image.new("L", (100, 100), 200)
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((10, 20, 35, 80), fill=40)
+        draw.rectangle((60, 20, 85, 80), fill=170)
+        _, low, _, _ = ltg.prepare_image_for_print(image, trace_mode="photo", photo_detail=0)
+        _, high, _, _ = ltg.prepare_image_for_print(image, trace_mode="photo", photo_detail=100)
+        self.assertGreater(high[:, 55:90].sum(), low[:, 55:90].sum())
+        self.assertGreater(low[:, :40].sum(), 0)
+        _, smooth, _, _ = ltg.prepare_image_for_print(image, trace_mode="photo", photo_smoothing=3)
+        self.assertFalse(np.array_equal(low, smooth))
+        # Brightness cutoff must not suppress gradients in Photo outlines mode.
+        _, cutoff, _, _ = ltg.prepare_image_for_print(image, trace_mode="photo", photo_detail=0,
+                                                      dark_threshold=0)
+        self.assertTrue(np.array_equal(low, cutoff))
+
+    def test_photo_settings_and_centimetre_fraction_survive_preview_download(self):
+        image = Image.fromarray(np.tile(np.linspace(30, 220, 100).astype(np.uint8), (100, 1)))
+        ImageDraw.Draw(image).rectangle((25, 20, 75, 80), fill=10)
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        buf.seek(0)
+        with app.test_client() as client:
+            response = client.post("/generate", data={"image": (buf, "photo.png")})
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b"Photo outlines (automatic)", response.data)
+            fields = DownloadFields(response.get_data(as_text=True)).fields
+            self.assertEqual(fields["trace_mode"], "auto")
+            self.assertEqual(fields["photo_detail"], "50")
+            self.assertEqual(fields["photo_smoothing"], "1")
+            fields.update(photo_detail="65", photo_smoothing="1.4", print_height_mm="3.21")
+            regenerated = client.post("/regenerate", data=fields)
+            next_fields = DownloadFields(regenerated.get_data(as_text=True)).fields
+            self.assertEqual(next_fields["photo_detail"], "65")
+            self.assertEqual(next_fields["photo_smoothing"], "1.4")
+            self.assertEqual(next_fields["print_height_mm"], "3.21")
+            self.assertEqual(client.post("/download", data=fields).data,
+                             client.post("/download", data=next_fields).data)
+            self.assertIn(b"G1 Z3.210 F600", client.post("/download", data=next_fields).data)
+            self.assertRegex(regenerated.get_data(as_text=True), r'name="print_height_mm"[^>]*step="0\.01"')
+            self.assertRegex(client.get("/").get_data(as_text=True), r'name="print_height_mm"[^>]*step="0\.01"')
+
     def test_threshold_selects_grayscale_pixels_and_excludes_white(self):
         image = Image.fromarray(np.array([[0, 100, 128, 180, 255]], dtype=np.uint8))
         for threshold, expected in (

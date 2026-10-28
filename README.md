@@ -85,20 +85,36 @@ mechanics separately.
 
 ## Trace modes
 
-- **both** (hybrid) — outline + skeleton, good general default
+- **auto** (default) — selects Photo outlines for images with many gray tones;
+  uses Hybrid for mostly black-and-white artwork. The result names the selected
+  method; you can override it on the upload or adjustment page.
+- **photo** — Canny brightness-gradient edges, traced as single lines rather than
+  outlines plus artificial centerlines through solid dark regions. Good for photos.
+- **both** (hybrid) — outline + skeleton for black-and-white artwork
 - **edge** — traces outlines/borders only
 - **skeletonize** — traces centerlines only, best for thin line art
 
+For Photo outlines, **Photo detail** defaults to **50** and **Photo smoothing** to
+**1 px** at the 300px working resolution. Increasing detail keeps weaker edges;
+increasing smoothing suppresses fine texture. These defaults were selected by
+visually comparing 18 edge settings against the supplied syringe/printer photo:
+they preserve the syringe and printer outlines while removing most paper-towel
+texture. They do not isolate the syringe from the surrounding printer or preserve
+every ink dot. Automatic selection is a midtone heuristic, so use the explicit
+Photo outlines or artwork modes when it chooses poorly.
+
 The **Dark-pixel threshold** slider controls which image pixels become printable
-foreground before tracing, in all three modes. Images are converted to grayscale
+foreground in Hybrid, Dark-region outlines, and Centerlines. It has no effect in
+Photo outlines mode. Images are converted to grayscale
 (0 = black, 255 = white); pixels strictly below the selected threshold are included.
 The default is 128. Lower values keep only darker marks; higher values include
 lighter detail but can also include background noise. In Edge mode, contours follow
 the boundaries of those selected regions. This is a brightness cutoff, not a
 minimum feature size or a change in tracing resolution (still capped at 300px).
 
-Use Generate or Regenerate to apply the slider. Downloads preserve the threshold
-used for their preview. The CLI accepts the same setting as `--dark-threshold 180`.
+Use Generate or Regenerate to apply the sliders. Downloads preserve all settings
+used for their preview. The CLI accepts `--trace-mode photo --photo-detail 50
+--photo-smoothing 1` or `--trace-mode edge --dark-threshold 180`.
 
 ## Deploying to Vercel
 
@@ -194,6 +210,7 @@ what hid this bug the first time.
   browser rejects out-of-range values before they're ever submitted.
 - `print_height_mm` defaults to the preset's `default_height_mm` when specified
   (3.2mm for square plates). Otherwise it is agar surface height **plus**
-  `PRINT_HEIGHT_CLEARANCE_MM` (0.1mm).
+  `PRINT_HEIGHT_CLEARANCE_MM` (0.1mm). Both height inputs accept 0.01mm increments,
+  including calculated Petri dish defaults such as 3.62mm.
 - Not hardened for untrusted users. There's no auth, and every request runs image
   processing, so a public deployment is trivially easy to run up against rate limits.
