@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
 Continuous line-tracing G-code generator (SVG-plotter style) with hybrid
-skeleton+outline path generation and circular-dish scaling.
+skeleton+outline path generation and plate-aware clipping.
 
 - Black/dark pixels are printed (explicit rule, DARK_THRESHOLD).
 - Hybrid pathing:
     * Skeleton (medial axis) used for thin/centerlines
     * Outline contours included for regions whose medial radius exceeds a threshold
-- Scaling: fits design so the farthest foreground pixel from image center
-  maps to the printable circle of diameter MAX_AREA_MM.
-- Preview: shows source image, dish circle, toolpaths and a simulated line width
+- Scaling: fits the image's longer dimension to the buffered plate span.
+- Preview: shows the plate, printable boundary, toolpaths and a simulated line width
   based on extrusion_per_mm with a simple proportional mapping.
 
 Usage:
@@ -59,8 +58,7 @@ MIN_CONTOUR_LEN_PX = 15
 # submits, "label" is what the dropdown shows.
 #
 #   shape           "round" or "square". This affects the agar-depth math (floor area is
-#                   pi*r^2 vs side^2) and the preview outline. It does NOT change the path
-#                   clip, which is always a circle -- see print_area_radius_mm below.
+#                   pi*r^2 vs side^2), preview outline, and path clipping boundary.
 #   size_mm         Flat inner floor dimension: diameter for round, side for square. This is
 #                   the usable flat base, NOT the outer rim-to-rim size. Plates with a sloped
 #                   rim have a flat floor noticeably smaller than their nominal size.
@@ -95,6 +93,14 @@ PLATE_PRESETS = {
         "agar_volume_ml": 70.0,
         "center_xy": (100.0, 100.0),
     },
+    "square_200": {
+        "label": "200mm square plate",
+        "shape": "square",
+        "size_mm": 200.0,
+        "edge_margin_mm": 3.0,
+        "agar_volume_ml": 125.0,  # approximately the same depth as square_150
+        "center_xy": (100.0, 100.0),
+    },
 }
 DEFAULT_PLATE_KEY = "square_150"
 
@@ -122,18 +128,14 @@ class Plate:
 
     @property
     def print_area_radius_mm(self):
-        """
-        Radius of the hard boundary paths are clipped to -- the buffered print area, not the
-        raw plate edge, so nothing prints in the edge margin even if a path reaches it.
-
-        The clip in clip_paths_to_dish is a CIRCLE for every plate shape, so on a square
-        plate this is the circle INSCRIBED in the square. A radius big enough to reach the
-        square's corners would be (side/2)*sqrt(2) -- 106.1mm on a 150mm plate -- and that
-        circle bulges 31mm past the plate edge at each of the four edge midpoints, where the
-        needle would extrude onto the bed. The inscribed circle is the largest circle wholly
-        on the plate. Reaching the corners needs a rectangular clip, not a bigger radius.
-        """
+        """Buffered radius for round plates, or half the printable side for squares."""
         return self.size_mm / 2.0 - self.edge_margin_mm
+
+    @property
+    def print_area_description(self):
+        if self.shape == "square":
+            return f"{self.max_area_mm:g} x {self.max_area_mm:g}mm square print area"
+        return f"{self.print_area_radius_mm:g}mm-radius circular print area"
 
     @property
     def max_area_mm(self):
@@ -149,13 +151,8 @@ class Plate:
 
     @property
     def unreachable_corner_fraction(self):
-        """
-        Fraction of the plate floor the circular clip cannot reach. 0 for a round plate;
-        1 - pi/4 ~= 21.5% for a square one (before the edge margin).
-        """
-        if self.shape != "square":
-            return 0.0
-        return max(0.0, 1.0 - self.floor_area_circle_equivalent / self.floor_area_mm2)
+        """No corners are lost to clipping beyond the configured edge margin."""
+        return 0.0
 
     @property
     def floor_area_circle_equivalent(self):
@@ -181,12 +178,20 @@ class Plate:
         return (self.center_x - half, self.center_y - half,
                 self.center_x + half, self.center_y + half)
 
+    def print_extent_mm(self):
+        """Bounding rectangle of the buffered print area in bed coordinates."""
+        half = self.print_area_radius_mm
+        return (self.center_x - half, self.center_y - half,
+                self.center_x + half, self.center_y + half)
+
     def as_template_dict(self):
         return dict(
             key=self.key, label=self.label, shape=self.shape,
             size_mm=f"{self.size_mm:g}",
+            edge_margin_mm=f"{self.edge_margin_mm:g}",
             print_area_radius_mm=f"{self.print_area_radius_mm:g}",
             max_area_mm=f"{self.max_area_mm:g}",
+            print_area_description=self.print_area_description,
             agar_volume_ml=f"{self.agar_volume_ml:g}",
             agar_depth_mm=f"{self.agar_surface_height_mm():.2f}",
             # The needle height: agar depth PLUS the clearance. Kept distinct from
@@ -598,11 +603,10 @@ def _farthest_corner_mm(area_w_mm, area_h_mm, origin_x, origin_y, plate):
 
 def design_bounds_check(mask, h, w, area_w_mm, area_h_mm, origin_x, origin_y, plate=None):
     """
-    Check whether the current placement's bounding-box corners extend
-    farther from the dish center than the DEFAULT auto-fit placement
-    (scale_pct=100, no offset) would for the same image.
+    Check square placements against the buffered rectangle. For round plates,
+    compare distance from center against the default auto-fit placement.
 
-    This is deliberately NOT a check against the literal dish radius
+    The round-plate check is deliberately NOT against the literal dish radius
     (max_area_mm / 2): the existing auto-fit only caps the longer image
     dimension to max_area_mm, so a square or non-circular image's bounding
     box already extends past the inscribed dish circle at its corners by
@@ -620,6 +624,12 @@ def design_bounds_check(mask, h, w, area_w_mm, area_h_mm, origin_x, origin_y, pl
     )
     baseline_farthest = _farthest_corner_mm(baseline_w, baseline_h, baseline_ox, baseline_oy, plate)
     farthest = _farthest_corner_mm(area_w_mm, area_h_mm, origin_x, origin_y, plate)
+    if plate.shape == "square":
+        min_x, min_y, max_x, max_y = plate.print_extent_mm()
+        fits = (origin_x >= min_x - 1e-6 and origin_y >= min_y - 1e-6
+                and origin_x + area_w_mm <= max_x + 1e-6
+                and origin_y + area_h_mm <= max_y + 1e-6)
+        return fits, farthest, baseline_farthest
     return farthest <= baseline_farthest + 1e-6, farthest, baseline_farthest
 
 
@@ -695,14 +705,48 @@ def clip_polyline_to_circle(points, cx, cy, r):
     return result
 
 
-def clip_paths_to_dish(paths_mm, cx, cy, r, min_len_mm=0.5):
-    """
-    Clip every path to the physical dish circle so nothing prints past the
-    dish edge, dropping any resulting fragment shorter than min_len_mm (tiny
-    slivers left over from a near-tangent crossing aren't worth a travel
-    move). Returns (clipped_paths, was_clipped, dropped_len_mm) where
-    dropped_len_mm is the total path length that fell outside the dish.
-    """
+def clip_polyline_to_rectangle(points, min_x, min_y, max_x, max_y):
+    """Clip segments to a rectangle, splitting paths at excursions outside it."""
+    result, current = [], []
+    for p0, p1 in zip(points, points[1:]):
+        t_enter, t_exit = 0.0, 1.0
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        # Liang-Barsky segment clipping, including outside-to-outside crossings.
+        for p, q in ((-dx, p0[0] - min_x), (dx, max_x - p0[0]),
+                     (-dy, p0[1] - min_y), (dy, max_y - p0[1])):
+            if p == 0:
+                if q < 0:
+                    t_enter, t_exit = 1.0, 0.0
+                    break
+                continue
+            t = q / p
+            if p < 0:
+                t_enter = max(t_enter, t)
+            else:
+                t_exit = min(t_exit, t)
+            if t_enter > t_exit:
+                break
+
+        if t_enter <= t_exit:
+            start = (p0[0] + t_enter * dx, p0[1] + t_enter * dy)
+            end = (p0[0] + t_exit * dx, p0[1] + t_exit * dy)
+            if current and math.dist(current[-1], start) > 1e-9:
+                result.append(current)
+                current = []
+            if not current:
+                current = [start]
+            current.append(end)
+        if t_enter > t_exit or t_exit < 1.0:
+            if len(current) >= 2:
+                result.append(current)
+            current = []
+    if len(current) >= 2:
+        result.append(current)
+    return result
+
+
+def _clip_paths(paths_mm, clip_polyline, min_len_mm):
+    """Clip paths and drop tiny fragments; return paths, clipping flag, lost length."""
     def path_len(pts):
         return sum(math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1]) for i in range(len(pts)-1))
 
@@ -710,7 +754,7 @@ def clip_paths_to_dish(paths_mm, cx, cy, r, min_len_mm=0.5):
 
     clipped = []
     for p in paths_mm:
-        for piece in clip_polyline_to_circle(p, cx, cy, r):
+        for piece in clip_polyline(p):
             if path_len(piece) >= min_len_mm:
                 clipped.append(piece)
 
@@ -718,6 +762,20 @@ def clip_paths_to_dish(paths_mm, cx, cy, r, min_len_mm=0.5):
     dropped_len_mm = max(0.0, original_len - clipped_len)
     was_clipped = dropped_len_mm > 1e-6
     return clipped, was_clipped, dropped_len_mm
+
+
+def clip_paths_to_dish(paths_mm, cx, cy, r, min_len_mm=0.5):
+    """Clip to a circular dish, dropping fragments shorter than min_len_mm."""
+    return _clip_paths(paths_mm, lambda p: clip_polyline_to_circle(p, cx, cy, r), min_len_mm)
+
+
+def clip_paths_to_plate(paths_mm, plate, min_len_mm=0.5):
+    """Use a square boundary for square plates and a circular one for round plates."""
+    if plate.shape == "square":
+        bounds = plate.print_extent_mm()
+        return _clip_paths(paths_mm, lambda p: clip_polyline_to_rectangle(p, *bounds), min_len_mm)
+    return clip_paths_to_dish(paths_mm, plate.center_x, plate.center_y,
+                              plate.print_area_radius_mm, min_len_mm)
 
 
 def optimize_path_order(all_paths_mm, start_xy=None):
@@ -775,7 +833,7 @@ def generate_gcode(all_contours_mm, print_height_mm=None,
     lines = [
         "; Continuous line-trace pattern (black regions only)",
         f"; Plate: {plate.label} ({plate.shape}, {plate.size_mm:g}mm, "
-        f"print area r={plate.print_area_radius_mm:g}mm)",
+        f"{plate.print_area_description})",
         "; Agar-printing workflow: start at plate center and keep the needle near the surface",
         "G21 ; units mm",
         "G90 ; absolute positioning",
@@ -880,11 +938,17 @@ def build_preview_svg(contours_mm, plate, extrusion_per_mm, width_px=620):
             'stroke-dasharray="2 1.6"/>'
             % (esc(plate.center_x), esc(plate.center_y), esc(plate.size_mm / 2.0)))
 
-    # The clip boundary. On a square plate this is the inscribed circle, so the gap between
-    # it and the dashed plate edge is area the circular clip cannot reach.
-    out.append(
-        '<circle cx="%s" cy="%s" r="%s" fill="none" stroke="#c0392b" stroke-width="0.7"/>'
-        % (esc(plate.center_x), esc(plate.center_y), esc(plate.print_area_radius_mm)))
+    # The red boundary matches the shape used to clip the actual toolpaths.
+    if plate.shape == "square":
+        print_min_x, print_min_y, _, _ = plate.print_extent_mm()
+        out.append(
+            '<rect x="%s" y="%s" width="%s" height="%s" fill="none" '
+            'stroke="#c0392b" stroke-width="0.7"/>'
+            % (esc(print_min_x), esc(print_min_y), esc(plate.max_area_mm), esc(plate.max_area_mm)))
+    else:
+        out.append(
+            '<circle cx="%s" cy="%s" r="%s" fill="none" stroke="#c0392b" stroke-width="0.7"/>'
+            % (esc(plate.center_x), esc(plate.center_y), esc(plate.print_area_radius_mm)))
     out.append(
         '<path d="M %s %s h 6 M %s %s v 6" stroke="#9aa0a6" stroke-width="0.4"/>'
         % (esc(plate.center_x - 3), esc(plate.center_y), esc(plate.center_x), esc(plate.center_y - 3)))
@@ -951,9 +1015,8 @@ def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm
     fits_dish, farthest_corner_mm, baseline_farthest_mm = design_bounds_check(
         mask, h, w, area_w_mm, area_h_mm, origin_x, origin_y, plate=plate)
     if not fits_dish:
-        print(f"WARNING: this placement's bounding box reaches {farthest_corner_mm:.1f}mm from plate "
-              f"center, farther than the {baseline_farthest_mm:.1f}mm the default auto-fit placement "
-              f"would reach for this image.")
+        print(f"WARNING: this placement's bounding box exceeds the "
+              f"{'print area' if plate.shape == 'square' else 'default auto-fit bounds'}.")
 
     all_contours_mm = []
     for p in pixel_paths:
@@ -966,11 +1029,10 @@ def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm
     # (or a generous auto-fit on a non-square image) can push parts of a design past the
     # print area even when the bounding-box check above doesn't flag it, since that check
     # only looks at the box corners.
-    all_contours_mm, was_clipped, clipped_len_mm = clip_paths_to_dish(
-        all_contours_mm, plate.center_x, plate.center_y, plate.print_area_radius_mm)
+    all_contours_mm, was_clipped, clipped_len_mm = clip_paths_to_plate(all_contours_mm, plate)
     if was_clipped:
         print(f"WARNING: {clipped_len_mm:.1f}mm of path length fell outside the "
-              f"{plate.print_area_radius_mm:.1f}mm print area and was clipped or dropped.")
+              f"{plate.print_area_description} and was clipped or dropped.")
 
     all_contours_mm_ordered = optimize_path_order(all_contours_mm, start_xy=(plate.center_x, plate.center_y))
     print(f"{len(all_contours_mm_ordered)} ordered path(s) after optimization")

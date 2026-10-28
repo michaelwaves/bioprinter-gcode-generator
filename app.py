@@ -256,12 +256,16 @@ def _result_template_args(result):
     warnings = []
     if result["was_clipped"]:
         warnings.append(f"{result['clipped_len_mm']:.1f}mm of the traced path fell outside the "
-                         f"{plate.print_area_radius_mm:.1f}mm print area and was clipped -- part of the "
+                         f"{plate.print_area_description} and was clipped -- part of the "
                          f"design won't print. Reduce scale or offset to fit it all.")
     if not result["fits_dish"]:
-        warnings.append(f"This placement reaches {result['farthest_corner_mm']:.1f}mm from plate center "
-                         f"-- farther out than the {result['baseline_farthest_mm']:.1f}mm the default "
-                         f"auto-fit placement uses for this image.")
+        if plate.shape == "square":
+            warnings.append(f"This placement's bounding box extends outside the "
+                            f"{plate.print_area_description}. Reduce scale or offset to fit it all.")
+        else:
+            warnings.append(f"This placement reaches {result['farthest_corner_mm']:.1f}mm from plate center "
+                            f"-- farther out than the {result['baseline_farthest_mm']:.1f}mm the default "
+                            f"auto-fit placement uses for this image.")
     if result["fg_fraction"] > 0.9:
         warnings.append("Over 90% of the image counted as foreground -- the background may also be dark. "
                          "Check the preview before printing.")

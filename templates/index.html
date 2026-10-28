@@ -145,6 +145,7 @@
         <option value="{{ p.key }}" data-print-height="{{ p.default_print_height_mm }}"
                 data-radius="{{ p.print_area_radius_mm }}" data-span="{{ p.max_area_mm }}"
                 data-volume="{{ p.agar_volume_ml }}" data-shape="{{ p.shape }}"
+                data-margin="{{ p.edge_margin_mm }}"
                 {% if p.key == selected_plate_key %}selected{% endif %}>{{ p.label }}</option>
         {% endfor %}
       </select>
@@ -201,7 +202,7 @@
     <button type="submit">Generate G-code</button>
   </form>
 
-  <footer>Dark pixels are treated as foreground. Design is scaled to fit the selected plate, and paths are clipped to a circle centred on it.</footer>
+  <footer>Dark pixels are treated as foreground. Design is scaled to fit the selected plate, and paths are clipped to its buffered square or circular print area.</footer>
 </main>
 <script>
   // Keep the plate hint and the default print height in step with the selected preset.
@@ -217,9 +218,12 @@
     var r = o.dataset.radius, span = o.dataset.span, vol = o.dataset.volume, shape = o.dataset.shape;
     var hint = document.getElementById('plate_hint');
     if (hint) {
-      hint.textContent = 'Designs are clipped to a ' + r + 'mm-radius circle (' + span +
-        'mm across) centred on the plate. Default assumes a ' + vol + 'mL pour' +
-        (shape === 'square' ? '; the circular clip cannot reach the square corners.' : '.');
+      var boundary = shape === 'square'
+        ? span + ' × ' + span + 'mm square, including its corners'
+        : r + 'mm-radius circle (' + span + 'mm across)';
+      hint.textContent = 'Designs are clipped to a ' + boundary +
+        ' centred on the plate, with a ' + o.dataset.margin +
+        'mm edge margin. Default assumes a ' + vol + 'mL pour.';
     }
     var h = document.getElementById('print_height_mm');
     if (h) {

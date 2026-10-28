@@ -42,7 +42,7 @@ PLATE_PRESETS = {
 }
 ```
 
-Shipped presets: `petri_85`, `petri_100`, `square_150`. `DEFAULT_PLATE_KEY` sets
+Shipped presets: `petri_85`, `petri_100`, `square_150`, `square_200`. `DEFAULT_PLATE_KEY` sets
 which one is preselected.
 
 Three things to get right when adding one:
@@ -58,15 +58,29 @@ Three things to get right when adding one:
   square. The default needle height is derived from this, so a wrong volume means a
   wrong Z.
 
-### Square plates lose their corners
+### Square print areas
 
-The path clip (`clip_paths_to_dish`) is always a **circle**, so on a square plate the
-usable region is the circle *inscribed* in the square — about 21% of the floor, in the
-four corners, is unreachable. Making the radius large enough to reach the corners would
-push it `(side/2)·√2` out: on a 150mm plate that's 106mm, which bulges 31mm past the
-plate edge at each edge midpoint, where the needle would extrude onto the bed. Reaching
-the corners needs a rectangular clip, not a bigger radius. The preview draws the plate
-outline and the clip circle so the unreachable area is visible.
+Square presets use a rectangular path clip, so all four corners are accessible.
+Round Petri dishes retain their circular clip. The red preview boundary matches
+the actual clip; the dashed outline shows the physical plate edge.
+
+The 3mm margin on each edge gives `square_150` a **144 × 144mm** printable area and
+`square_200` a **194 × 194mm** printable area. The 200mm preset assumes a 125mL pour
+(about 3.1mm depth) and the same bed center, `(100, 100)`, as the other presets;
+its printable X/Y coordinates run from 3 to 197mm. The preset describes plate
+geometry; it does not change the printer firmware's travel limits or homing.
+
+### Printer controls and homing
+
+This app generates files and previews; it has no manual Extrude/Retract buttons
+or Home All command. Generated files use negative E to extrude and positive E
+to retract for this syringe setup. Reversed manual buttons must be investigated
+in the printer interface/configuration that provides those controls.
+
+Generated G-code sets millimetres and absolute X/Y positioning, but does not
+issue `G28` or reset X/Y coordinates. Repeated Home All offsets cannot be diagnosed
+from this repository alone; investigate the printer's homing configuration and
+mechanics separately.
 
 ## Trace modes
 

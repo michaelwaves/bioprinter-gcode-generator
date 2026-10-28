@@ -165,7 +165,7 @@
   <div class="preview">{{ preview_svg|safe }}</div>
 
   <table class="stats">
-    <tr><td>Plate</td><td>{{ plate.label }} &mdash; {{ plate.print_area_radius_mm }}mm print radius</td></tr>
+    <tr><td>Plate</td><td>{{ plate.label }} &mdash; {{ plate.print_area_description }}</td></tr>
     <tr><td>Paths generated</td><td>{{ n_paths }}</td></tr>
     <tr><td>Foreground (dark pixel) fraction</td><td>{{ fg_fraction }}%</td></tr>
     <tr><td>Total traced line length</td><td>{{ total_len_mm }} mm</td></tr>
