@@ -70,8 +70,8 @@ def _parse_placement_fields(form, plate):
     clamping to sane ranges. Falls back to defaults on missing or unparseable values rather
     than erroring -- these are refinement controls, not required input.
 
-    print_height_mm defaults per plate: the agar surface height depends on the plate's floor
-    area, so the same pour sits at a different height on a different preset.
+    Print height uses the plate's explicit preset height, falling back to calculated
+    agar surface height plus clearance when no height is specified by the preset.
     """
     scale_pct = _clamped_float(form, "scale_pct", 100.0, SCALE_PCT_MIN, SCALE_PCT_MAX)
     offset_x_mm = _clamped_float(form, "offset_x_mm", 0.0, -OFFSET_MM_LIMIT, OFFSET_MM_LIMIT)
@@ -135,6 +135,8 @@ def _form_bounds():
         extrusion_per_mm_max=f"{EXTRUSION_PER_MM_MAX:g}",
         max_upload_mb=f"{MAX_UPLOAD_BYTES / (1024 * 1024):g}",
         working_resolution_cap=ltg.MAX_TRACE_SIDE_PX,
+        dark_threshold_min=ltg.DARK_THRESHOLD_MIN,
+        dark_threshold_max=ltg.DARK_THRESHOLD_MAX,
         plates=[ltg.Plate.from_key(k).as_template_dict() for k, _ in ltg.plate_choices()],
     )
 
@@ -146,6 +148,7 @@ def _index_defaults(plate=None):
         selected_plate_key=plate.key,
         default_print_height_mm=f"{plate.default_print_height_mm():.2f}",
         default_extrusion_per_mm=f"{ltg.DEFAULT_EXTRUSION_PER_MM:.4f}",
+        dark_threshold=ltg.DARK_THRESHOLD,
         **_form_bounds(),
     )
 
@@ -158,10 +161,13 @@ def _render_index(error=None, plate=None):
 def _run(img, trace_mode, plate, form):
     scale_pct, offset_x_mm, offset_y_mm, print_height_mm, extrusion_per_mm = \
         _parse_placement_fields(form, plate)
+    dark_threshold = int(_clamped_float(form, "dark_threshold", ltg.DARK_THRESHOLD,
+                                        ltg.DARK_THRESHOLD_MIN, ltg.DARK_THRESHOLD_MAX))
     return ltg.process_image(
         img, trace_mode=trace_mode, plate=plate,
         scale_pct=scale_pct, offset_x_mm=offset_x_mm, offset_y_mm=offset_y_mm,
         print_height_mm=print_height_mm, extrusion_per_mm=extrusion_per_mm,
+        dark_threshold=dark_threshold,
         write_files=False,
     )
 
@@ -289,6 +295,7 @@ def _result_template_args(result):
         offset_y_mm=result["offset_y_mm"],
         print_height_mm=f"{result['print_height_mm']:.2f}",
         extrusion_per_mm=f"{result['extrusion_per_mm']:.4f}",
+        dark_threshold=result["dark_threshold"],
         warnings=warnings,
         **_form_bounds(),
     )

@@ -1,0 +1,9 @@
+<div class="placement-field">
+  <label for="dark_threshold"><span>Dark-pixel threshold</span><span id="dark_threshold_val">{{ dark_threshold }}</span></label>
+  <input type="range" id="dark_threshold" name="dark_threshold"
+         min="{{ dark_threshold_min }}" max="{{ dark_threshold_max }}" step="1" value="{{ dark_threshold }}"
+         aria-describedby="dark_threshold_hint"
+         oninput="document.getElementById('dark_threshold_val').textContent = this.value">
+</div>
+<p class="placement-hint" id="dark_threshold_hint">Lower = only darker marks. Higher = includes lighter details and more noise.
+  Default: 128. Edges follow the boundaries of the included pixels. Apply with Generate or Regenerate.</p>

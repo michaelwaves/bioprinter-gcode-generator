@@ -55,8 +55,9 @@ Three things to get right when adding one:
 - **`agar_volume_ml` doesn't carry over between plates.** Floor area grows with the
   *square* of plate size, so a volume that gave a good depth on a small dish is a very
   thin layer on a big plate. 20mL is 3.52mm deep in an 85mm dish and 0.89mm on a 150mm
-  square. The default needle height is derived from this, so a wrong volume means a
-  wrong Z.
+  square. Unless `default_height_mm` is set on the preset, the default needle height
+  is derived from this, so a wrong volume means a wrong Z. Both square presets have
+  an explicit **3.2mm** default height; the form allows manual adjustments.
 
 ### Square print areas
 
@@ -87,6 +88,17 @@ mechanics separately.
 - **both** (hybrid) — outline + skeleton, good general default
 - **edge** — traces outlines/borders only
 - **skeletonize** — traces centerlines only, best for thin line art
+
+The **Dark-pixel threshold** slider controls which image pixels become printable
+foreground before tracing, in all three modes. Images are converted to grayscale
+(0 = black, 255 = white); pixels strictly below the selected threshold are included.
+The default is 128. Lower values keep only darker marks; higher values include
+lighter detail but can also include background noise. In Edge mode, contours follow
+the boundaries of those selected regions. This is a brightness cutoff, not a
+minimum feature size or a change in tracing resolution (still capped at 300px).
+
+Use Generate or Regenerate to apply the slider. Downloads preserve the threshold
+used for their preview. The CLI accepts the same setting as `--dark-threshold 180`.
 
 ## Deploying to Vercel
 
@@ -180,7 +192,8 @@ what hid this bug the first time.
   input `min`/`max` from those constants via `_form_bounds()`, so widening a clamp takes
   effect without editing HTML. Hardcoding them in both places silently breaks: the
   browser rejects out-of-range values before they're ever submitted.
-- `print_height_mm` is the agar surface height **plus** `PRINT_HEIGHT_CLEARANCE_MM`
-  (0.1mm), so the needle sits just above the agar rather than in it.
+- `print_height_mm` defaults to the preset's `default_height_mm` when specified
+  (3.2mm for square plates). Otherwise it is agar surface height **plus**
+  `PRINT_HEIGHT_CLEARANCE_MM` (0.1mm).
 - Not hardened for untrusted users. There's no auth, and every request runs image
   processing, so a public deployment is trivially easy to run up against rate limits.

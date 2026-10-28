@@ -51,6 +51,7 @@ DEFAULT_EXTRUSION_PER_MM = 0.0030  # mm^3/mm -- lowest value that worked in past
 RETRACT_E = 0.02
 
 DARK_THRESHOLD = 128
+DARK_THRESHOLD_MIN, DARK_THRESHOLD_MAX = 0, 255
 MIN_CONTOUR_LEN_PX = 15
 
 # ---- plate presets ----
@@ -91,6 +92,7 @@ PLATE_PRESETS = {
         "size_mm": 150.0,
         "edge_margin_mm": 3.0,
         "agar_volume_ml": 70.0,
+        "default_height_mm": 3.2,
         "center_xy": (100.0, 100.0),
     },
     "square_200": {
@@ -99,6 +101,7 @@ PLATE_PRESETS = {
         "size_mm": 200.0,
         "edge_margin_mm": 3.0,
         "agar_volume_ml": 125.0,  # approximately the same depth as square_150
+        "default_height_mm": 3.2,
         "center_xy": (100.0, 100.0),
     },
 }
@@ -111,13 +114,15 @@ class Plate:
     module-level constants, so switching preset switches the whole pipeline consistently.
     """
 
-    def __init__(self, key, label, shape, size_mm, edge_margin_mm, agar_volume_ml, center_xy):
+    def __init__(self, key, label, shape, size_mm, edge_margin_mm, agar_volume_ml, center_xy,
+                 default_height_mm=None):
         self.key = key
         self.label = label
         self.shape = shape
         self.size_mm = float(size_mm)
         self.edge_margin_mm = float(edge_margin_mm)
         self.agar_volume_ml = float(agar_volume_ml)
+        self.default_height_mm = default_height_mm
         self.center_x, self.center_y = (float(center_xy[0]), float(center_xy[1]))
 
     @classmethod
@@ -168,6 +173,8 @@ class Plate:
         return (volume_ml * 1000.0) / self.floor_area_mm2
 
     def default_print_height_mm(self, clearance_mm=None):
+        if clearance_mm is None and self.default_height_mm is not None:
+            return self.default_height_mm
         if clearance_mm is None:
             clearance_mm = PRINT_HEIGHT_CLEARANCE_MM
         return self.agar_surface_height_mm() + clearance_mm
@@ -194,9 +201,7 @@ class Plate:
             print_area_description=self.print_area_description,
             agar_volume_ml=f"{self.agar_volume_ml:g}",
             agar_depth_mm=f"{self.agar_surface_height_mm():.2f}",
-            # The needle height: agar depth PLUS the clearance. Kept distinct from
-            # agar_depth_mm because the depth alone would park the needle exactly on the
-            # agar surface rather than just above it.
+            # Preset needle height, or calculated agar depth plus clearance.
             default_print_height_mm=f"{self.default_print_height_mm():.2f}",
             center_x=f"{self.center_x:g}", center_y=f"{self.center_y:g}",
         )
@@ -238,7 +243,8 @@ def find_images(folder):
     return sorted(set(files))
 
 
-def prepare_image_for_print(path_or_image, out_path=None, trace_mode="both", max_side_px=MAX_TRACE_SIDE_PX):
+def prepare_image_for_print(path_or_image, out_path=None, trace_mode="both", max_side_px=MAX_TRACE_SIDE_PX,
+                            dark_threshold=DARK_THRESHOLD):
     """
     Load the source image once, threshold it into a foreground mask according to
     trace_mode, and downsample that mask (if needed) -- all in a single pass.
@@ -273,7 +279,9 @@ def prepare_image_for_print(path_or_image, out_path=None, trace_mode="both", max
     white_bg = Image.fromarray(np.full((*img.size[::-1], 4), 255, dtype=np.uint8), mode="RGBA")
     img = Image.alpha_composite(white_bg, img).convert("L")
     arr = np.array(img)
-    mask = arr < DARK_THRESHOLD  # explicit: only dark pixels count as foreground
+    if not DARK_THRESHOLD_MIN <= dark_threshold <= DARK_THRESHOLD_MAX or int(dark_threshold) != dark_threshold:
+        raise ValueError("Dark-pixel threshold must be an integer from 0 to 255.")
+    mask = arr < dark_threshold  # higher thresholds include lighter pixels
 
     # Downsample the raw foreground mask FIRST, before any thinning. Doing it
     # after skeletonize/edge extraction (the previous order) fed a mask that
@@ -967,7 +975,7 @@ def build_preview_svg(contours_mm, plate, extrusion_per_mm, width_px=620):
 
 def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm=0.0, offset_y_mm=0.0,
                    print_height_mm=None, extrusion_per_mm=None, plate=None, plate_key=None,
-                   out_dir=None, write_files=True, name=None):
+                   out_dir=None, write_files=True, name=None, dark_threshold=DARK_THRESHOLD):
     """
     Run the whole pipeline for one image and return a result dict.
 
@@ -995,7 +1003,8 @@ def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm
     print(f"\n--- {name} ({plate.label}) ---")
 
     prepared_path = os.path.join(out_dir, f"{name}_prepared.png") if write_files else None
-    _, mask, h, w = prepare_image_for_print(path_or_image, prepared_path, trace_mode=trace_mode)
+    _, mask, h, w = prepare_image_for_print(path_or_image, prepared_path, trace_mode=trace_mode,
+                                          dark_threshold=dark_threshold)
     print(f"prepared image: {w}x{h}px working resolution")
 
     fg_fraction = mask.sum() / mask.size
@@ -1075,6 +1084,7 @@ def process_image(path_or_image, trace_mode="both", scale_pct=100.0, offset_x_mm
         "baseline_farthest_mm": baseline_farthest_mm,
         "print_height_mm": print_height_mm,
         "extrusion_per_mm": extrusion_per_mm,
+        "dark_threshold": dark_threshold,
         "was_clipped": was_clipped,
         "clipped_len_mm": clipped_len_mm,
         "plate": plate,
@@ -1086,6 +1096,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate line-trace G-code from an image")
     parser.add_argument("images", nargs="*", help="Image files to process")
     parser.add_argument("--trace-mode", choices=["skeletonize", "edge", "both"], default="both")
+    parser.add_argument("--dark-threshold", type=int, default=DARK_THRESHOLD, metavar="0-255",
+                        help="include pixels darker than this value (default: %(default)s)")
     parser.add_argument("--plate", choices=sorted(PLATE_PRESETS), default=DEFAULT_PLATE_KEY,
                         help="plate preset to print on (default: %(default)s)")
     args = parser.parse_args()
@@ -1117,4 +1129,5 @@ if __name__ == "__main__":
     else:
         print(f"found {len(images)} image(s)")
         for img_path in images:
-            process_image(img_path, trace_mode=args.trace_mode, plate_key=args.plate)
+            process_image(img_path, trace_mode=args.trace_mode, plate_key=args.plate,
+                           dark_threshold=args.dark_threshold)

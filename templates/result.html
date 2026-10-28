@@ -129,6 +129,7 @@
     margin-bottom: 0.35rem;
   }
   .placement-field input[type="range"] { width: 100%; }
+  .placement-hint { font-size: 0.8rem; color: #5a5f5c; margin: 0 0 1.25rem; }
   .placement-field input[type="number"] {
     width: 100%;
     padding: 0.45rem 0.6rem;
@@ -146,6 +147,7 @@
 #}
 {% macro state_fields() -%}
   <input type="hidden" name="trace_mode" value="{{ trace_mode }}">
+  <input type="hidden" name="dark_threshold" value="{{ dark_threshold }}">
   <input type="hidden" name="design_b64" value="{{ design_b64 }}">
   <input type="hidden" name="plate_key" value="{{ selected_plate_key }}">
   <input type="hidden" name="scale_pct" value="{{ scale_pct }}">
@@ -168,6 +170,7 @@
     <tr><td>Plate</td><td>{{ plate.label }} &mdash; {{ plate.print_area_description }}</td></tr>
     <tr><td>Paths generated</td><td>{{ n_paths }}</td></tr>
     <tr><td>Foreground (dark pixel) fraction</td><td>{{ fg_fraction }}%</td></tr>
+    <tr><td>Dark-pixel threshold</td><td>{{ dark_threshold }}</td></tr>
     <tr><td>Total traced line length</td><td>{{ total_len_mm }} mm</td></tr>
     <tr><td>Estimated total extrusion</td><td>{{ est_extrusion_mm }} mm</td></tr>
     <tr><td>Design footprint on plate</td><td>{{ area_w_mm }} x {{ area_h_mm }} mm</td></tr>
@@ -186,10 +189,11 @@
   </div>
 
   <details class="adjust">
-    <summary>Adjust scale &amp; position</summary>
+    <summary>Adjust detail, scale &amp; position</summary>
     <form action="/regenerate" method="post">
       <input type="hidden" name="trace_mode" value="{{ trace_mode }}">
       <input type="hidden" name="design_b64" value="{{ design_b64 }}">
+      {% include '_threshold_control.html' %}
       <div class="placement-field">
         <label for="plate_key">Plate</label>
         <select id="plate_key" name="plate_key">
